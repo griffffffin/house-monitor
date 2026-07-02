@@ -1,5 +1,8 @@
 # house-monitor
 
+[![Tests](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An asyncio-based Python scraper that watches 19 Austrian real-estate websites for cheap houses and emails a summary whenever a new listing appears or an existing one drops in price.
 
 ## Why this exists
