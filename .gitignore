@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+
+# Runtime adat / log — személyes/gépi adat, nem tartozik a repóba
+seen-houses.json
+*.log
+
+# Titkos adatok — soha ne kerüljön be a repóba
+.env
+secrets.env
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code local settings — machine-specific (local paths, LAN IPs from
+# past debugging sessions), not meant to be shared. .claude/settings.json
+# itself (the project-level hooks config) stays tracked on purpose.
+.claude/settings.local.json
