@@ -2,6 +2,7 @@
 
 [![Tests](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
 An asyncio-based Python scraper that watches 19 Austrian real-estate websites for cheap houses and emails a summary whenever a new listing appears or an existing one drops in price.
 
@@ -93,6 +94,15 @@ black house_monitor/ tests/
 ruff check house_monitor/ tests/
 mypy house_monitor/
 ```
+
+Optionally, install the [pre-commit](https://pre-commit.com/) hooks to run the same checks automatically before every commit, instead of only in CI:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Dependency updates (both Python packages and the CI workflow's own actions) are handled by [Dependabot](.github/dependabot.yml), which opens a PR automatically on a weekly schedule.
 
 ## Sample output
 
