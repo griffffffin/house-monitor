@@ -18,10 +18,19 @@ internally before returning results, so "0 listings" here can mean either
 band right now" - it's not a perfect oracle. Treat a 0 (or a big drop from
 a source's usual count) as a prompt to check that source manually, not as
 proof of breakage by itself.
+
+Exit code: non-zero only if a scraper actually raised (a real fetch/parse
+error) - a clean 0-result is reported but doesn't fail the run by itself,
+since that's a judgment call this script can't make on its own (see the
+caveat above). Also runs on a weekly schedule via
+.github/workflows/live-check.yml, which writes the summary to the GitHub
+Actions job summary in addition to stdout.
 """
 
 import asyncio
 import logging
+import os
+import sys
 import time
 
 import aiohttp
@@ -108,27 +117,57 @@ async def main():
     results.sort(key=lambda r: r[1])  # suspicious (0-result) ones float to the top
 
     name_width = max(len(SCRAPER_SUMMARY_LABELS.get(n, (n, ""))[0]) for n, _, _, _ in results)
-    suspicious = []
+    zero_result = []
+    errored = []
+    summary_lines = []
     for cls_name, count, error, elapsed in results:
         label = SCRAPER_SUMMARY_LABELS.get(cls_name, (cls_name, "listings"))[0]
         if error:
             flag = "  ERROR"
-            suspicious.append((label, error))
+            errored.append((label, error))
         elif count == 0:
             flag = "  <- 0 results, check manually"
-            suspicious.append((label, "0 results"))
+            zero_result.append(label)
         else:
             flag = ""
-        print(f"{label:<{name_width}}  {count:>4}  ({elapsed:5.1f}s){flag}")
+        line = f"{label:<{name_width}}  {count:>4}  ({elapsed:5.1f}s){flag}"
+        print(line)
+        summary_lines.append(line)
 
     print()
-    if suspicious:
-        print(f"{len(suspicious)} source(s) worth a manual look:")
-        for label, reason in suspicious:
+    if errored or zero_result:
+        print(f"{len(errored) + len(zero_result)} source(s) worth a manual look:")
+        for label, reason in errored:
             print(f"  - {label}: {reason}")
+        for label in zero_result:
+            print(f"  - {label}: 0 results")
     else:
         print("All sources returned at least one listing.")
 
+    # In CI (scheduled runs), surface the summary prominently regardless of
+    # exit status, and any exit-code interpretation. A 0-result source isn't
+    # necessarily broken (see the module docstring), so it's reported but
+    # doesn't fail the run by itself - only an actual fetch error does, since
+    # that's an unambiguous technical failure rather than a market-conditions
+    # judgment call.
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write("### Live smoke check results\n\n```\n")
+            f.write("\n".join(summary_lines))
+            f.write("\n```\n")
+            if zero_result:
+                f.write(
+                    f"\n**0-result sources** (not necessarily broken - "
+                    f"could be no inventory in range right now): "
+                    f"{', '.join(zero_result)}\n"
+                )
+            if errored:
+                error_labels = ", ".join(label for label, _ in errored)
+                f.write(f"\n**Sources with fetch errors**: {error_labels}\n")
+
+    return 1 if errored else 0
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

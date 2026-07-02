@@ -52,6 +52,8 @@ scripts/               # live_smoke_check.py — the real-network counterpart to
 pip install -r requirements.txt
 ```
 
+(or `pip install .` / `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `house-monitor` console script; production just uses `requirements.txt` directly since the deployment target has no internet access to install a package from, see `CLAUDE.md`)
+
 Set the following environment variables (see `.env.example`):
 
 ```
@@ -84,7 +86,9 @@ Every scraper has a unit test that feeds it a hand-built HTML (or JSON, for the 
 python3 -m scripts.live_smoke_check
 ```
 
-Runs every scraper for real, against the live sites, with no price/blacklist filtering and no email/database side effects — just a per-source result count, sorted so 0-result (or errored) sources float to the top. This is the counterpart to the unit tests above: it can't run in CI (network-dependent, and a 0 doesn't always mean "broken" — most scrapers also apply their own internal price-range filter, so it can just as easily mean "nothing in range right now"), but it's the fastest way to sanity-check all 19 sources at once when something feels off, instead of checking them one by one by hand.
+Runs every scraper for real, against the live sites, with no price/blacklist filtering and no email/database side effects — just a per-source result count, sorted so 0-result (or errored) sources float to the top. This is the counterpart to the unit tests above: it's network-dependent and a 0 doesn't always mean "broken" (most scrapers also apply their own internal price-range filter, so it can just as easily mean "nothing in range right now"), but it's the fastest way to sanity-check all 19 sources at once when something feels off, instead of checking them one by one by hand.
+
+It also runs on a [weekly schedule](.github/workflows/live-check.yml) (Mondays, plus on-demand via the Actions tab) — the workflow only fails on an actual fetch error, not a clean 0-result, since distinguishing "broken" from "no inventory right now" needs a human judgment call either way (see the module docstring). A 0-result source still shows up in the job summary, just without failing the run by itself.
 
 ### Dev tooling
 
