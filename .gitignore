@@ -12,11 +12,11 @@ __pycache__/
 venv/
 .venv/
 
-# Runtime adat / log — személyes/gépi adat, nem tartozik a repóba
+# Runtime data / logs — personal/machine-specific, doesn't belong in the repo
 seen-houses.json
 *.log
 
-# Titkos adatok — soha ne kerüljön be a repóba
+# Secrets — must never end up in the repo
 .env
 secrets.env
 

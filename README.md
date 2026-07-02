@@ -96,15 +96,17 @@ mypy house_monitor/
 
 ## Sample output
 
-```
-==============    Sonnberger (2 db)    ==============
+The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
 
-1. Kis ház kertes telken
-   Ár: 45 000 €
+```
+==============    Sonnberger (2 listings)    ==============
+
+1. Cozy house with garden
+   Price: 45 000 €
    Link: https://sonnberger.co.at/wp/immobilien/...
 
-2. Nagy villa medencével
-   Ár: 68 000 €
+2. Large villa with pool
+   Price: 68 000 €
    Link: https://sonnberger.co.at/wp/immobilien/...
 ```
 
