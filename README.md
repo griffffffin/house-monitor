@@ -95,6 +95,15 @@ ruff check house_monitor/ tests/
 mypy house_monitor/
 ```
 
+...or via the `Makefile`:
+
+```bash
+make install-dev
+make check   # test + lint + typecheck + format --check, all in one go
+```
+
+CI runs the test suite against Python 3.11, 3.12, and 3.13.
+
 Optionally, install the [pre-commit](https://pre-commit.com/) hooks to run the same checks automatically before every commit, instead of only in CI:
 
 ```bash
