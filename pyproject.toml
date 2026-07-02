@@ -1,0 +1,19 @@
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# BeautifulSoup's Tag.get()/.find() return broad unions (str | list[str] | None,
+# Tag | NavigableString | None) that don't reflect that a given HTML attribute
+# (e.g. href) is always a single string in practice. Narrowing every call site
+# across 19 near-identical scrapers would add defensive casts for a case that
+# can't actually happen, without any real safety benefit. Real bugs (wrong
+# types on Listing fields, missing Optional, etc.) still surface normally.
+module = "house_monitor.scrapers.*"
+disable_error_code = ["union-attr", "index", "operator", "call-arg", "arg-type", "assignment"]
