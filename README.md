@@ -96,7 +96,11 @@ mypy house_monitor/
 
 ## Sample output
 
-The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
+Compact console output from a manual run (`NOTICE`-level: milestones only, per-source counts, email outcome — full page-by-page detail goes to the log file instead):
+
+![Console output from a manual run](docs/images/console-demo.png)
+
+The email itself is grouped by source. The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
 
 ```
 ==============    Sonnberger (2 listings)    ==============
