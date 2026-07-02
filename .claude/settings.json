@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in */house_monitor/*.py|*/tests/test_house_monitor.py) python3 -m pytest tests/ -v ;; esac; }",
+            "timeout": 60,
+            "statusMessage": "house-monitor tesztek futtatása..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | { read -r c; if echo \"$c\" | grep -qE 'house_monitor/.*\\.py|test_house_monitor\\.py' && echo \"$c\" | grep -qE '(^|[^a-zA-Z])(cp|mv|tee)\\b|sed -i|>[^>]'; then python3 -m pytest tests/ -v; fi; }",
+            "timeout": 60,
+            "statusMessage": "house-monitor tesztek futtatása..."
+          }
+        ]
+      }
+    ]
+  }
+}
