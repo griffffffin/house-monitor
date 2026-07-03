@@ -2,6 +2,7 @@
 
 import asyncio
 import fcntl
+import signal
 import sys
 
 from .monitor import HouseMonitor
@@ -9,7 +10,17 @@ from .monitor import HouseMonitor
 LOCK_FILE = "/tmp/house-monitor.lock"
 
 
+def _handle_sigterm(signum, frame) -> None:
+    # systemd's KillMode=mixed sends SIGTERM on `systemctl stop`. Python has
+    # no default handler for it (unlike SIGINT, which already raises
+    # KeyboardInterrupt) - without this, the process would die immediately,
+    # skipping HouseMonitor.run()'s `finally: await self._save_db()`.
+    raise KeyboardInterrupt()
+
+
 def main() -> None:
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     try:
         lock_fd = open(LOCK_FILE, "w")
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
