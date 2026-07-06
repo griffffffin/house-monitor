@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import sys
-from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -235,51 +234,40 @@ class HouseMonitor:
         return False
 
     def _build_email_body(self, listings: List[Listing]) -> str:
-        """Build the email body, grouped by source (modeled on the sibling
-        product-monitor.py project's design: a decorated header per source
-        plus a numbered list, rather than one flat, source-agnostic list).
-        The body text itself is in Hungarian by design — it's the actual
-        content of the notification email, not developer-facing output."""
-        by_source: Dict[str, List[Listing]] = defaultdict(list)
-        for listing in listings:
-            display_name = SOURCE_DISPLAY_NAMES.get(listing.source, listing.source)
-            by_source[display_name].append(listing)
+        """Build the email body as a single flat, price-ordered list (new
+        listings first, then price changes, each ascending by price), with
+        the source name shown inline per listing rather than as a per-source
+        grouping header. The body text itself is in Hungarian by design —
+        it's the actual content of the notification email, not
+        developer-facing output."""
+        new_listings = sorted(
+            (item for item in listings if not item.price_changed),
+            key=lambda item: item.price,
+        )
+        changed_listings = sorted(
+            (item for item in listings if item.price_changed),
+            key=lambda item: item.price,
+        )
+        ordered = new_listings + changed_listings
 
         parts = ["-" * 148, "\n\n"]
-        for source in sorted(by_source.keys(), key=str.lower):
-            new_listings = sorted(
-                (item for item in by_source[source] if not item.price_changed),
-                key=lambda item: item.price,
-            )
-            changed_listings = sorted(
-                (item for item in by_source[source] if item.price_changed),
-                key=lambda item: item.price,
-            )
-            ordered = new_listings + changed_listings
-
-            parts.extend(
-                ["=" * 14, " " * 4, source, f" ({len(ordered)} db)", " " * 4, "=" * 14, "\n\n"]
-            )
-
-            for i, listing in enumerate(ordered, 1):
-                price_int = (
-                    int(listing.price) if listing.price == int(listing.price) else listing.price
+        for i, listing in enumerate(ordered, 1):
+            display_name = SOURCE_DISPLAY_NAMES.get(listing.source, listing.source)
+            price_int = int(listing.price) if listing.price == int(listing.price) else listing.price
+            price_fmt = _fmt_count(price_int) if isinstance(price_int, int) else price_int
+            if listing.price_changed:
+                old_int = (
+                    int(listing.old_price)
+                    if listing.old_price == int(listing.old_price)
+                    else listing.old_price
                 )
-                price_fmt = _fmt_count(price_int) if isinstance(price_int, int) else price_int
-                if listing.price_changed:
-                    old_int = (
-                        int(listing.old_price)
-                        if listing.old_price == int(listing.old_price)
-                        else listing.old_price
-                    )
-                    old_fmt = _fmt_count(old_int) if isinstance(old_int, int) else old_int
-                    parts.append(f"{i}. {listing.title}\n")
-                    parts.append(f"   Régi ár: {old_fmt} € -> Új ár: {price_fmt} €\n")
-                else:
-                    parts.append(f"{i}. {listing.title}\n")
-                    parts.append(f"   Ár: {price_fmt} €\n")
-                parts.append(f"   Link: {listing.url}\n\n")
-
+                old_fmt = _fmt_count(old_int) if isinstance(old_int, int) else old_int
+                parts.append(f"{i}. {listing.title} ({display_name})\n")
+                parts.append(f"   Régi ár: {old_fmt} € -> Új ár: {price_fmt} €\n")
+            else:
+                parts.append(f"{i}. {listing.title} ({display_name})\n")
+                parts.append(f"   Ár: {price_fmt} €\n")
+            parts.append(f"   Link: {listing.url}\n\n")
             parts.append("-" * 148 + "\n\n")
         return "".join(parts)
 

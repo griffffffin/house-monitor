@@ -260,12 +260,12 @@ class TestBuildEmailBody:
         body = monitor._build_email_body([new_listing, changed])
         assert "🆕" not in body and "📉" not in body
 
-    def test_source_header_uses_console_display_name(self, hm):
+    def test_listing_shows_console_display_name_inline(self, hm):
         monitor = _new_monitor(hm)
         listing = self._listing(hm, id="a", title="House", price=10000.0, source="sonnberger.co.at")
         body = monitor._build_email_body([listing])
-        assert "Sonnberger (1 db)" in body
-        assert "sonnberger.co.at (1 db)" not in body
+        assert "House (Sonnberger)" in body
+        assert "sonnberger.co.at" not in body
 
 
 # ---------------------------------------------------------------------------

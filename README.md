@@ -123,18 +123,16 @@ Compact console output from a manual run (`NOTICE`-level: milestones only, per-s
 
 ![Console output from a manual run](docs/images/console-demo.png)
 
-The email itself is grouped by source. The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
+The email itself is a single list ordered by price (new listings first, then price changes), with the source shown inline per listing. The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
 
 ```
-==============    Sonnberger (2 listings)    ==============
-
-1. Cozy house with garden
+1. Cozy house with garden (Sonnberger)
    Price: 45 000 €
    Link: https://sonnberger.co.at/wp/immobilien/...
 
-2. Large villa with pool
+2. Modern family home near the lake (Dibeo)
    Price: 68 000 €
-   Link: https://sonnberger.co.at/wp/immobilien/...
+   Link: https://dibeo.at/expose/...
 ```
 
 ## A note on how this was built
