@@ -8,6 +8,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, GOLDGRUBE_BASE_URL, GOLDGRUBE_URLS
+from ..fetch import fetch_bytes
 from ..models import Listing, decode_utf8_or_latin1, parse_de_price
 
 
@@ -25,6 +26,9 @@ class GoldgrubeScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error (missing
+        # pages possible) — picked up by the monitor's same-day retry loop.
+        self.incomplete = False
 
     @staticmethod
     def _parse_price(span) -> float:
@@ -68,6 +72,7 @@ class GoldgrubeScraper:
     async def fetch_listings(self) -> List[Listing]:
         results = []
         seen_ids: set = set()
+        self.incomplete = False
 
         for base_url in GOLDGRUBE_URLS:
             page = 1
@@ -76,16 +81,16 @@ class GoldgrubeScraper:
                 url = base_url if page == 1 else f"{base_url}?p={page}"
                 logging.info(f"Goldgrube.at: fetching page {page} → {url}")
                 try:
-                    async with self.session.get(
-                        url, timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        if resp.status != 200:
-                            logging.warning(f"Goldgrube.at: HTTP {resp.status} – {url}")
-                            break
-                        raw = await resp.read()
-                        html = decode_utf8_or_latin1(raw, resp.charset)
+                    status, raw, charset = await fetch_bytes(
+                        self.session, url, timeout=aiohttp.ClientTimeout(total=30)
+                    )
+                    if status != 200:
+                        logging.warning(f"Goldgrube.at: HTTP {status} – {url}")
+                        break
+                    html = decode_utf8_or_latin1(raw, charset)
                 except Exception as e:
                     logging.error(f"Goldgrube.at: fetch error: {e}")
+                    self.incomplete = True
                     break
 
                 page_cards = self._parse_cards(html)

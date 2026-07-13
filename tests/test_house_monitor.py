@@ -20,7 +20,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from house_monitor import monitor as _hm_module
-from house_monitor.fetch import fetch_text
+from house_monitor.fetch import fetch_bytes, fetch_text
 
 
 @pytest.fixture(scope="session")
@@ -1075,6 +1075,10 @@ def test_all_scrapers_are_constructible(hm):
 
 
 class _FakeResponse:
+    # Deliberately a wrong charset label: fetch_bytes must hand it through
+    # untouched so decode_utf8_or_latin1 can distrust it (the Goldgrube case).
+    charset = "iso-8859-1"
+
     def __init__(self, status=200, body="ok"):
         self.status = status
         self._body = body
@@ -1087,6 +1091,9 @@ class _FakeResponse:
 
     async def text(self):
         return self._body
+
+    async def read(self):
+        return self._body.encode("utf-8")
 
 
 class _RaisingContext:
@@ -1138,6 +1145,17 @@ class TestFetchText:
         status, _ = asyncio.run(fetch_text(session, "http://x", backoff=0))
         assert status == 404
         assert session.calls == 1
+
+    def test_fetch_bytes_retries_and_returns_raw_body_and_charset(self):
+        # The Goldgrube path: raw bytes + the (possibly wrong) declared
+        # charset come back untouched, so decode_utf8_or_latin1 stays in
+        # charge of decoding — with the same retry as fetch_text.
+        session = _FlakySession(failures=1, body="Grünen")
+        status, raw, charset = asyncio.run(fetch_bytes(session, "http://x", backoff=0))
+        assert status == 200
+        assert raw == "Grünen".encode("utf-8")
+        assert charset == "iso-8859-1"
+        assert session.calls == 2
 
 
 # ---------------------------------------------------------------------------
