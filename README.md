@@ -57,11 +57,11 @@ pip install -r requirements.txt
 Set the following environment variables (see `.env.example`):
 
 ```
-HOUSE_MONITOR_SMTP_SERVER=smtp.gmail.com
-HOUSE_MONITOR_SMTP_PORT=587
-HOUSE_MONITOR_SENDER_EMAIL=you@example.com
-HOUSE_MONITOR_SENDER_PASSWORD=your-app-password
-HOUSE_MONITOR_RECIPIENT_EMAIL=you@example.com
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SENDER_EMAIL=you@example.com
+SENDER_PASSWORD=your-app-password
+RECIPIENT_EMAIL=you@example.com
 ```
 
 Then:
