@@ -40,6 +40,13 @@ EMAIL_CONFIG = {
     "recipient_email": os.environ.get("RECIPIENT_EMAIL", ""),
 }
 
+# Same-day retry for sources whose fetch ended on an error (see the scrapers'
+# `incomplete` flag and HouseMonitor._scrape_and_notify): wait time before
+# each retry pass, in seconds. The main 16:00 email is never delayed by this —
+# only the failed sources are re-fetched, and anything new they find goes out
+# in a separate follow-up email the same day.
+INCOMPLETE_RETRY_DELAYS = (1800, 1800, 3600)
+
 # --- Price filter — change here to affect ALL scrapers ---
 EUR_PRICE_FROM = 3000
 EUR_PRICE_TO = 70000

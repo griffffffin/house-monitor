@@ -8,6 +8,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..config import FINDHEIM_BASE_URL, FINDHEIM_URL
+from ..fetch import fetch_text
 from ..models import Listing, parse_de_price
 
 
@@ -28,6 +29,10 @@ class FindheimScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error, i.e. the
+        # returned list may be missing pages — the monitor's same-day retry
+        # loop re-runs the sources that set this flag.
+        self.incomplete = False
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "lxml")
@@ -86,18 +91,18 @@ class FindheimScraper:
         results = []
         seen_ids: set = set()
         page = 1
+        self.incomplete = False
 
         while True:
             url = f"{FINDHEIM_URL}&page={page}"
             logging.info(f"Findheim.at: fetching page {page} -> {url}")
             try:
-                async with self.session.get(
-                    url, headers={"Accept-Language": "de-DE,de;q=0.9"}
-                ) as resp:
-                    if resp.status != 200:
-                        logging.warning(f"Findheim.at: HTTP {resp.status} on page {page}.")
-                        break
-                    html = await resp.text()
+                status, html = await fetch_text(
+                    self.session, url, headers={"Accept-Language": "de-DE,de;q=0.9"}
+                )
+                if status != 200:
+                    logging.warning(f"Findheim.at: HTTP {status} on page {page}.")
+                    break
 
                 page_cards = self._parse_cards(html)
 
@@ -132,6 +137,7 @@ class FindheimScraper:
 
             except Exception as e:
                 logging.error(f"Findheim.at: error on page {page}: {e}")
+                self.incomplete = True
                 break
 
         logging.info(f"Findheim: {len(results)} listings")

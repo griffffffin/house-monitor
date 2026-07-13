@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import aiofiles
 import aiohttp
@@ -19,6 +19,7 @@ from .config import (
     EMAIL_CONFIG,
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
+    INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SKIP_NO_PERSIST,
 )
@@ -271,6 +272,153 @@ class HouseMonitor:
             parts.append("-" * 148 + "\n\n")
         return "".join(parts)
 
+    async def _scrape_and_notify(self, scrapers: List[Any]) -> List[Any]:
+        """One full fetch -> filter -> notify -> persist cycle over the given
+        scrapers. Returns the scrapers whose fetch failed or was cut short
+        (unhandled exception from the gather, or the scraper set its
+        `incomplete` flag after an in-loop error), so the caller can re-run
+        just those later the same day."""
+        db_changed = False
+        to_notify: List[Listing] = []
+        failed: List[Any] = []
+
+        # Scrapers run concurrently (independent domains, no shared
+        # state between them besides the common aiohttp session) ->
+        # total run time is bounded by the single slowest scraper,
+        # instead of the sum of all of them running sequentially.
+        scraper_results = await asyncio.gather(
+            *(scraper.fetch_listings() for scraper in scrapers),
+            return_exceptions=True,
+        )
+
+        all_listings: List[Listing] = []
+        summary_rows = []
+        for scraper, result in zip(scrapers, scraper_results):
+            if isinstance(result, BaseException):
+                logging.error(
+                    f"{scraper.__class__.__name__}: unhandled error, "
+                    f"this source is excluded from this run: {result}",
+                    exc_info=result,
+                )
+                failed.append(scraper)
+                continue
+            if getattr(scraper, "incomplete", False):
+                # The scraper returned partial results after an in-loop
+                # error (missing pages possible): process what it did get
+                # now, and queue the source for the same-day retry pass.
+                failed.append(scraper)
+            all_listings.extend(result)
+            label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
+            if label:
+                name, unit = label
+                summary_rows.append((name, unit, len(result)))
+
+        # On the console, show the "listings" group first, then "ads",
+        # alphabetically by name within each group — the completion
+        # order of the concurrent gather() would otherwise be chaotic.
+        # Column alignment: the name field width matches the length of
+        # "Immobilien.net" (the reference — a longer name would break
+        # alignment), counts are right-aligned (so the "listings"/"ads"
+        # word also lines up in a column), with a space as the
+        # thousands separator.
+        name_width = len("Immobilien.net")
+        rows_with_count_str = [
+            (name, unit, _fmt_count(count)) for name, unit, count in summary_rows
+        ]
+        num_width = max((len(cs) for _, _, cs in rows_with_count_str), default=0)
+
+        for unit in ("listings", "ads"):
+            for name, _unit, count_str in sorted(
+                (row for row in rows_with_count_str if row[1] == unit),
+                key=lambda row: row[0].lower(),
+            ):
+                log_notice(f"{name:<{name_width}}: {count_str:>{num_width}} {unit}")
+
+        log_notice(f"Total listings fetched: {len(all_listings)}")
+
+        for listing in all_listings:
+            title_lower = listing.title.lower()
+
+            # SKIP_NO_PERSIST: skip but do NOT write to the database —
+            # if the "reserved" status changes, we'll notify on the next run.
+            if any(word.lower() in title_lower for word in SKIP_NO_PERSIST):
+                logging.info(f"Temporary skip (no-persist): {listing.title}")
+                continue
+
+            if any(word.lower() in title_lower for word in BLACKLIST):
+                if listing.id not in self.seen:
+                    logging.info(f"Blacklisted listing hidden: {listing.title}")
+                    self.seen[listing.id] = listing
+                    db_changed = True
+                continue
+
+            if listing.id in self.seen:
+                existing = self.seen[listing.id]
+                if existing.price != listing.price:
+                    listing.price_changed = True
+                    listing.old_price = existing.price
+                    # Also filter cross-platform duplicates on price drops
+                    if self._already_seen_elsewhere(listing, also_check=to_notify):
+                        logging.info(
+                            f"Price-drop duplicate hidden: {listing.title} ({listing.price}€)"
+                        )
+                        self.seen[listing.id] = listing
+                        db_changed = True
+                    else:
+                        to_notify.append(listing)
+            else:
+                # Findheim's server-side price filter is unreliable — filter client-side
+                if listing.source == "findheim.at" and listing.price > 0:
+                    if not (EUR_PRICE_FROM <= listing.price <= EUR_PRICE_TO):
+                        logging.info(
+                            f"Price filter ({listing.source}): {listing.title} ({listing.price}€) excluded"
+                        )
+                        self.seen[listing.id] = listing
+                        db_changed = True
+                        continue
+
+                if self._already_seen_elsewhere(listing, also_check=to_notify):
+                    logging.info(
+                        f"Cross-platform duplicate hidden: {listing.title} ({listing.price}€)"
+                    )
+                    self.seen[listing.id] = listing
+                    db_changed = True
+                else:
+                    to_notify.append(listing)
+
+        if to_notify:
+            log_notice(f"Found {len(to_notify)} new/changed listings. Sending email...")
+            subject = f"Ingatlanok: {len(to_notify)} db"
+            body = self._build_email_body(to_notify)
+            success = await self.notifier.send(subject, body)
+
+            if success:
+                log_notice("Email sent. Updating database.")
+                now_ts = datetime.now().isoformat()
+                for listing in all_listings:
+                    listing.last_seen = now_ts
+                    if listing.id in self.seen:
+                        # Preserve original first_seen
+                        listing.first_seen = self.seen[listing.id].first_seen
+                    self.seen[listing.id] = listing
+                db_changed = True
+            else:
+                logging.error("Email failed! Will retry on the next run.")
+        else:
+            log_notice("No new findings.")
+            # No new listings but still update last_seen for all fetched ones
+            now_ts = datetime.now().isoformat()
+            for listing in all_listings:
+                if listing.id in self.seen:
+                    self.seen[listing.id].last_seen = now_ts
+            db_changed = True
+
+        if db_changed:
+            await self._save_db()
+
+        log_notice("Run complete.")
+        return failed
+
     async def run(self):
         log_notice("Monitor has started.")
 
@@ -322,138 +470,31 @@ class HouseMonitor:
                 await asyncio.sleep(wait)
 
                 log_notice("Searching...")
-                db_changed = False
-                to_notify: List[Listing] = []
+                failed = await self._scrape_and_notify(scrapers)
 
-                # Scrapers run concurrently (independent domains, no shared
-                # state between them besides the common aiohttp session) ->
-                # total run time is bounded by the single slowest scraper,
-                # instead of the sum of all of them running sequentially.
-                scraper_results = await asyncio.gather(
-                    *(scraper.fetch_listings() for scraper in scrapers),
-                    return_exceptions=True,
-                )
-
-                all_listings: List[Listing] = []
-                summary_rows = []
-                for scraper, result in zip(scrapers, scraper_results):
-                    if isinstance(result, Exception):
-                        logging.error(
-                            f"{scraper.__class__.__name__}: unhandled error, "
-                            f"this source is excluded from this run: {result}",
-                            exc_info=result,
-                        )
-                        continue
-                    all_listings.extend(result)
-                    label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
-                    if label:
-                        name, unit = label
-                        summary_rows.append((name, unit, len(result)))
-
-                # On the console, show the "listings" group first, then "ads",
-                # alphabetically by name within each group — the completion
-                # order of the concurrent gather() would otherwise be chaotic.
-                # Column alignment: the name field width matches the length of
-                # "Immobilien.net" (the reference — a longer name would break
-                # alignment), counts are right-aligned (so the "listings"/"ads"
-                # word also lines up in a column), with a space as the
-                # thousands separator.
-                name_width = len("Immobilien.net")
-                rows_with_count_str = [
-                    (name, unit, _fmt_count(count)) for name, unit, count in summary_rows
-                ]
-                num_width = max((len(cs) for _, _, cs in rows_with_count_str), default=0)
-
-                for unit in ("listings", "ads"):
-                    for name, _unit, count_str in sorted(
-                        (row for row in rows_with_count_str if row[1] == unit),
-                        key=lambda row: row[0].lower(),
-                    ):
-                        log_notice(f"{name:<{name_width}}: {count_str:>{num_width}} {unit}")
-
-                log_notice(f"Total listings fetched: {len(all_listings)}")
-
-                for listing in all_listings:
-                    title_lower = listing.title.lower()
-
-                    # SKIP_NO_PERSIST: skip but do NOT write to the database —
-                    # if the "reserved" status changes, we'll notify on the next run.
-                    if any(word.lower() in title_lower for word in SKIP_NO_PERSIST):
-                        logging.info(f"Temporary skip (no-persist): {listing.title}")
-                        continue
-
-                    if any(word.lower() in title_lower for word in BLACKLIST):
-                        if listing.id not in self.seen:
-                            logging.info(f"Blacklisted listing hidden: {listing.title}")
-                            self.seen[listing.id] = listing
-                            db_changed = True
-                        continue
-
-                    if listing.id in self.seen:
-                        existing = self.seen[listing.id]
-                        if existing.price != listing.price:
-                            listing.price_changed = True
-                            listing.old_price = existing.price
-                            # Also filter cross-platform duplicates on price drops
-                            if self._already_seen_elsewhere(listing, also_check=to_notify):
-                                logging.info(
-                                    f"Price-drop duplicate hidden: {listing.title} ({listing.price}€)"
-                                )
-                                self.seen[listing.id] = listing
-                                db_changed = True
-                            else:
-                                to_notify.append(listing)
-                    else:
-                        # Findheim's server-side price filter is unreliable — filter client-side
-                        if listing.source == "findheim.at" and listing.price > 0:
-                            if not (EUR_PRICE_FROM <= listing.price <= EUR_PRICE_TO):
-                                logging.info(
-                                    f"Price filter ({listing.source}): {listing.title} ({listing.price}€) excluded"
-                                )
-                                self.seen[listing.id] = listing
-                                db_changed = True
-                                continue
-
-                        if self._already_seen_elsewhere(listing, also_check=to_notify):
-                            logging.info(
-                                f"Cross-platform duplicate hidden: {listing.title} ({listing.price}€)"
-                            )
-                            self.seen[listing.id] = listing
-                            db_changed = True
-                        else:
-                            to_notify.append(listing)
-
-                if to_notify:
-                    log_notice(f"Found {len(to_notify)} new/changed listings. Sending email...")
-                    subject = f"Ingatlanok: {len(to_notify)} db"
-                    body = self._build_email_body(to_notify)
-                    success = await self.notifier.send(subject, body)
-
-                    if success:
-                        log_notice("Email sent. Updating database.")
-                        now_ts = datetime.now().isoformat()
-                        for listing in all_listings:
-                            listing.last_seen = now_ts
-                            if listing.id in self.seen:
-                                # Preserve original first_seen
-                                listing.first_seen = self.seen[listing.id].first_seen
-                            self.seen[listing.id] = listing
-                        db_changed = True
-                    else:
-                        logging.error("Email failed! Will retry on the next run.")
-                else:
-                    log_notice("No new findings.")
-                    # No new listings but still update last_seen for all fetched ones
-                    now_ts = datetime.now().isoformat()
-                    for listing in all_listings:
-                        if listing.id in self.seen:
-                            self.seen[listing.id].last_seen = now_ts
-                    db_changed = True
-
-                if db_changed:
-                    await self._save_db()
-
-                log_notice("Run complete.")
+                # Same-day retry: re-run ONLY the failed sources after a
+                # wait. The main email above already went out from the
+                # healthy sources, undelayed; anything new the retried
+                # sources find goes out in a separate follow-up email. The
+                # seen-DB and the cross-platform duplicate filter guarantee
+                # nothing already notified gets emailed twice.
+                for delay in INCOMPLETE_RETRY_DELAYS:
+                    if not failed:
+                        break
+                    names = ", ".join(s.__class__.__name__ for s in failed)
+                    log_notice(
+                        f"{len(failed)} incomplete source(s) ({names}), "
+                        f"retrying in {delay // 60} min..."
+                    )
+                    await asyncio.sleep(delay)
+                    log_notice("Retrying incomplete sources...")
+                    failed = await self._scrape_and_notify(failed)
+                if failed:
+                    names = ", ".join(s.__class__.__name__ for s in failed)
+                    log_notice(
+                        f"Still incomplete after retries: {names} — "
+                        "giving up until the next scheduled run."
+                    )
 
         except asyncio.CancelledError:
             log_notice("Monitor cancelled.")

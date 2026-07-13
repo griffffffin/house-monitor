@@ -15,10 +15,12 @@ import asyncio
 import json
 from pathlib import Path
 
+import aiohttp
 import pytest
 from bs4 import BeautifulSoup
 
 from house_monitor import monitor as _hm_module
+from house_monitor.fetch import fetch_text
 
 
 @pytest.fixture(scope="session")
@@ -1064,3 +1066,165 @@ def test_all_scrapers_are_constructible(hm):
     ]
     for cls in scraper_classes:
         assert cls(session=None) is not None
+
+
+# ---------------------------------------------------------------------------
+# fetch_text: retry on dropped keep-alive connections (the recurring
+# "[Errno 32] Broken pipe" on Findheim/Raiffeisen/Willhaben page 2)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status=200, body="ok"):
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def text(self):
+        return self._body
+
+
+class _RaisingContext:
+    """Mimics aiohttp's request context manager blowing up on __aenter__."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    async def __aenter__(self):
+        raise self._exc
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FlakySession:
+    """session.get() fails with a connection error the first `failures` times."""
+
+    def __init__(self, failures, status=200, body="ok"):
+        self.failures = failures
+        self.status = status
+        self.body = body
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            return _RaisingContext(aiohttp.ClientOSError(32, "Broken pipe"))
+        return _FakeResponse(status=self.status, body=self.body)
+
+
+class TestFetchText:
+    def test_retries_once_on_broken_pipe_then_succeeds(self):
+        session = _FlakySession(failures=1)
+        status, body = asyncio.run(fetch_text(session, "http://x", backoff=0))
+        assert (status, body) == (200, "ok")
+        assert session.calls == 2
+
+    def test_gives_up_after_all_attempts_and_reraises(self):
+        session = _FlakySession(failures=99)
+        with pytest.raises(aiohttp.ClientConnectionError):
+            asyncio.run(fetch_text(session, "http://x", attempts=3, backoff=0))
+        assert session.calls == 3
+
+    def test_non_200_is_returned_not_retried(self):
+        # HTTP error statuses are the callers' business (their own
+        # status-handling/break logic) - fetch_text must not retry them.
+        session = _FlakySession(failures=0, status=404, body="not found")
+        status, _ = asyncio.run(fetch_text(session, "http://x", backoff=0))
+        assert status == 404
+        assert session.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# _scrape_and_notify: collecting failed sources for the same-day retry pass
+# ---------------------------------------------------------------------------
+
+
+class _StubNotifier:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, subject, body):
+        self.sent.append((subject, body))
+        return True
+
+
+class _OkScraper:
+    incomplete = False
+
+    def __init__(self, listings):
+        self._listings = listings
+
+    async def fetch_listings(self):
+        return self._listings
+
+
+class _IncompleteScraper(_OkScraper):
+    """Returned partial results, but flagged itself incomplete (page error)."""
+
+    incomplete = True
+
+
+class _CrashingScraper:
+    async def fetch_listings(self):
+        raise RuntimeError("boom")
+
+
+class TestScrapeAndNotifyRetryCollection:
+    @staticmethod
+    def _listing(hm, id_, title, price, source="findheim.at"):
+        return hm.Listing(
+            id=id_,
+            title=title,
+            price=price,
+            url=f"http://example.test/{id_}",
+            source=source,
+            first_seen="2026-07-13T16:00:00",
+            last_seen="2026-07-13T16:00:00",
+        )
+
+    def test_failed_sources_returned_and_partial_results_still_notified(self, hm, tmp_path):
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+
+        ok = _OkScraper([self._listing(hm, "fh_ok1", "Haus in Graz", 30000.0)])
+        partial = _IncompleteScraper(
+            [self._listing(hm, "wh_p1", "Keller in Wien", 15000.0, source="willhaben.at")]
+        )
+        crashed = _CrashingScraper()
+
+        original_data_file = hm.DATA_FILE
+        hm.DATA_FILE = str(tmp_path / "seen.json")
+        try:
+            failed = asyncio.run(monitor._scrape_and_notify([ok, partial, crashed]))
+        finally:
+            hm.DATA_FILE = original_data_file
+
+        # The crashed AND the partial scraper are queued for retry; the healthy
+        # one is not.
+        assert failed == [partial, crashed]
+        # The incomplete scraper's partial results are NOT thrown away: they go
+        # out in the main email immediately.
+        assert len(monitor.notifier.sent) == 1
+        body = monitor.notifier.sent[0][1]
+        assert "Haus in Graz" in body
+        assert "Keller in Wien" in body
+
+    def test_healthy_run_returns_no_failures_and_sends_nothing(self, hm, tmp_path):
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+
+        original_data_file = hm.DATA_FILE
+        hm.DATA_FILE = str(tmp_path / "seen.json")
+        try:
+            failed = asyncio.run(monitor._scrape_and_notify([_OkScraper([])]))
+        finally:
+            hm.DATA_FILE = original_data_file
+
+        assert failed == []
+        assert monitor.notifier.sent == []

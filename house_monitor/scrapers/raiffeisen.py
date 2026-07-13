@@ -8,6 +8,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, RAIFFEISEN_BASE_URL, RAIFFEISEN_SEARCH_URL
+from ..fetch import fetch_text
 from ..models import Listing, parse_de_price
 
 
@@ -22,6 +23,9 @@ class RaiffeisenScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error (missing
+        # pages possible) — picked up by the monitor's same-day retry loop.
+        self.incomplete = False
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "lxml")
@@ -66,6 +70,7 @@ class RaiffeisenScraper:
         results = []
         seen_ids: set = set()
         page = 1
+        self.incomplete = False
 
         logging.info(f"Raiffeisen-Immobilien: starting -> {RAIFFEISEN_SEARCH_URL}")
 
@@ -73,13 +78,10 @@ class RaiffeisenScraper:
             url = f"{RAIFFEISEN_SEARCH_URL}&page={page}"
             logging.info(f"Raiffeisen-Immobilien: fetching page {page} -> {url}")
             try:
-                async with self.session.get(url) as resp:
-                    if resp.status != 200:
-                        logging.warning(
-                            f"Raiffeisen-Immobilien: HTTP {resp.status} on page {page}."
-                        )
-                        break
-                    html = await resp.text()
+                status, html = await fetch_text(self.session, url)
+                if status != 200:
+                    logging.warning(f"Raiffeisen-Immobilien: HTTP {status} on page {page}.")
+                    break
 
                 cards = self._parse_cards(html)
 
@@ -129,6 +131,7 @@ class RaiffeisenScraper:
 
             except Exception as e:
                 logging.error(f"Raiffeisen-Immobilien: error on page {page}: {e}")
+                self.incomplete = True
                 break
 
         logging.info(f"Raiffeisen-Immobilien: {len(results)} listings")

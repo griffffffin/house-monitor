@@ -9,6 +9,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, WILLHABEN_BASE_URL, WILLHABEN_URLS
+from ..fetch import fetch_text
 from ..models import Listing, parse_de_price
 
 
@@ -28,6 +29,10 @@ class WillhabenScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() hit an error on some page
+        # (missing results possible) — picked up by the monitor's same-day
+        # retry loop.
+        self.incomplete = False
 
     def _extract_attr(self, attributes: list, name: str) -> str:
         """Extracts the value of the named attribute from the attributes list."""
@@ -153,6 +158,7 @@ class WillhabenScraper:
     async def fetch_listings(self) -> List[Listing]:
         results = []
         seen_ids: set = set()
+        self.incomplete = False
 
         for base_url in WILLHABEN_URLS:
             page = 1
@@ -161,11 +167,10 @@ class WillhabenScraper:
                 url = f"{base_url}&page={page}"
                 logging.info(f"Willhaben.at: fetching page {page} -> {url}")
                 try:
-                    async with self.session.get(url) as resp:
-                        if resp.status != 200:
-                            logging.warning(f"Willhaben.at: HTTP {resp.status} on page {page}.")
-                            break
-                        html = await resp.text()
+                    status, html = await fetch_text(self.session, url)
+                    if status != 200:
+                        logging.warning(f"Willhaben.at: HTTP {status} on page {page}.")
+                        break
 
                     # --- Primary: extract the __NEXT_DATA__ JSON ---
                     next_data_match = re.search(
@@ -265,6 +270,7 @@ class WillhabenScraper:
 
                 except Exception as e:
                     logging.error(f"Willhaben.at: error on page {page}: {e}", exc_info=True)
+                    self.incomplete = True
                     break
 
         logging.info(f"Willhaben: {len(results)} listings")
