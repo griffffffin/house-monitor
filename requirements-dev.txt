@@ -2,6 +2,6 @@
 # formatting/linting/type-checking during development.
 -r requirements.txt
 black==26.5.1
-ruff==0.15.20
+ruff==0.15.22
 mypy==2.1.0
 types-beautifulsoup4==4.12.0.20250516
