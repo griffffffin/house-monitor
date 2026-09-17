@@ -638,6 +638,65 @@ class TestSonnbergerCardParsing:
         assert price == 0.0
 
 
+class TestPropyloCardParsing:
+    # Mirrors at.propylo.com: the whole card is a single <a> whose href ends in
+    # /verkaufsimmobilie/<id>; the title is an inner <h2> and the price a
+    # div.price ("15.000 €", German thousands-dot format). The href is already
+    # absolute.
+    HTML = """
+    <div class="itemList">
+      <a href="https://at.propylo.com/verkaufsimmobilie/57124186" title="Einfamilienhaus Abriss">
+        <picture><img class="itemImg" src="x.webp"/></picture>
+        <div class="itemInfos">
+          <h2>Einfamilienhaus Abriss , 3000 m2 Grundstück</h2>
+          <div class="price">15.000 €</div>
+        </div>
+      </a>
+      <a href="https://at.propylo.com/verkaufsimmobilie/57152810" title="Nettes Haus">
+        <div class="itemInfos">
+          <h2>Nettes Haus</h2>
+          <div class="price">1.250.000 €</div>
+        </div>
+      </a>
+    </div>
+    """
+
+    def test_extracts_id_title_url_price(self, hm):
+        scraper = hm.PropyloScraper(session=None)
+        cards = scraper._parse_cards(self.HTML)
+        assert len(cards) == 2
+        listing_id, title, url, price = cards[0]
+        assert listing_id == "pro_57124186"
+        assert title == "Einfamilienhaus Abriss , 3000 m2 Grundstück"
+        assert url == "https://at.propylo.com/verkaufsimmobilie/57124186"
+        assert price == 15000.0
+        # thousands-dot parsed correctly, not truncated to 1.25
+        assert cards[1][3] == 1250000.0
+
+    def test_falls_back_to_anchor_title_when_no_h2(self, hm):
+        html = """
+        <a href="https://at.propylo.com/verkaufsimmobilie/999" title="Titel aus Attribut">
+          <div class="price">40.000 €</div>
+        </a>
+        """
+        scraper = hm.PropyloScraper(session=None)
+        cards = scraper._parse_cards(html)
+        assert len(cards) == 1
+        assert cards[0][1] == "Titel aus Attribut"
+        assert cards[0][3] == 40000.0
+
+    def test_ignores_non_listing_anchors(self, hm):
+        # Nav links / detail-page anchors that aren't /verkaufsimmobilie/<id>
+        # must be skipped entirely.
+        html = """
+        <a href="https://at.propylo.com?search">Suche</a>
+        <a href="https://at.propylo.com/immobilie/123">alt detail form</a>
+        <a href="https://at.propylo.com/immobilien/wien">Wien</a>
+        """
+        scraper = hm.PropyloScraper(session=None)
+        assert scraper._parse_cards(html) == []
+
+
 class TestHegerRealCardParsing:
     # Mirrors the real hegerreal.at (Justimmo) list markup: a div.realty-wrapper
     # per listing, title in h3 > a (href="/objekt/<id>?from=..."), and a
@@ -1116,6 +1175,7 @@ def test_all_scrapers_are_constructible(hm):
         hm.DingDongScraper,
         hm.SonnbergerScraper,
         hm.HegerRealScraper,
+        hm.PropyloScraper,
     ]
     for cls in scraper_classes:
         assert cls(session=None) is not None

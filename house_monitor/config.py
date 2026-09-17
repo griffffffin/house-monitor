@@ -118,6 +118,28 @@ SONNBERGER_BASE_URL = "https://sonnberger.co.at"
 # happens entirely client-side (the site only sorts ascending by price).
 SONNBERGER_URL = f"{SONNBERGER_BASE_URL}/wp/immobilienart/haeuser/?sortby=a_price"
 
+# used by: PropyloScraper
+PROPYLO_BASE_URL = "https://at.propylo.com"
+# Aggregator, sales only (rentals live on the sister site at.flatspotter.com).
+# There's no country-wide listing page — listings are grouped per Bundesland, so
+# these 9 state pages together cover all of Austria. The site DOES honor a
+# server-side price filter + ascending-price sort via query params, so we push
+# the price range down to the server. Pagination is a trailing /N path segment
+# placed BEFORE the query string (page 1 has no suffix).
+_PROPYLO_REGIONS = [
+    "burgenland",
+    "karnten",
+    "niederosterreich",
+    "oberosterreich",
+    "land-salzburg",
+    "steiermark",
+    "tirol",
+    "vorarlberg",
+    "wien",
+]
+PROPYLO_QUERY = f"?price_min={EUR_PRICE_FROM}&price_max={EUR_PRICE_TO}&ordering=price_asc"
+PROPYLO_URLS = [f"{PROPYLO_BASE_URL}/immobilien/{r}" for r in _PROPYLO_REGIONS]
+
 # used by: HegerRealScraper
 HEGERREAL_BASE_URL = "https://www.hegerreal.at"
 # Justimmo-backed broker site, no server-side price filter parameter -> the whole
