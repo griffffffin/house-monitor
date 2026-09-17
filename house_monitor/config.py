@@ -118,6 +118,14 @@ SONNBERGER_BASE_URL = "https://sonnberger.co.at"
 # happens entirely client-side (the site only sorts ascending by price).
 SONNBERGER_URL = f"{SONNBERGER_BASE_URL}/wp/immobilienart/haeuser/?sortby=a_price"
 
+# used by: HegerRealScraper
+HEGERREAL_BASE_URL = "https://www.hegerreal.at"
+# Justimmo-backed broker site, no server-side price filter parameter -> the whole
+# inventory (houses/apartments/rentals) is listed on one page, filtering happens
+# client-side. Rentals carry a "Miete" (rent) row instead of "Kaufpreis", so they
+# naturally parse to price 0.0 and get dropped by the existing price==0 filter.
+HEGERREAL_URL = f"{HEGERREAL_BASE_URL}/aktuelle-immobilien"
+
 # used by: RaiffeisenScraper
 RAIFFEISEN_BASE_URL = "https://www.raiffeisen-immobilien.at"
 RAIFFEISEN_SEARCH_URL = (

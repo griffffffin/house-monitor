@@ -44,6 +44,7 @@ from house_monitor.scrapers import (
     FindheimScraper,
     FindMyHomeScraper,
     GoldgrubeScraper,
+    HegerRealScraper,
     ImmobIlienNetScraper,
     ImmobilienDeScraper,
     ImmodirektScraper,
@@ -109,6 +110,7 @@ async def main():
             ImmoLive24Scraper(session),
             DingDongScraper(session),
             SonnbergerScraper(session),
+            HegerRealScraper(session),
         ]
 
         print(f"Running {len(scrapers)} scrapers live, no filters applied by this script...\n")

@@ -638,6 +638,58 @@ class TestSonnbergerCardParsing:
         assert price == 0.0
 
 
+class TestHegerRealCardParsing:
+    # Mirrors the real hegerreal.at (Justimmo) list markup: a div.realty-wrapper
+    # per listing, title in h3 > a (href="/objekt/<id>?from=..."), and a
+    # short-info <li> list where one li holds the area and another the price,
+    # each split into a .list-item-desc label + .list-item-value.
+    HTML = """
+    <div class="realty-wrapper w-100">
+      <div class="text-cell">
+        <h3 class="mt-0 mb-1">
+          <a href="/objekt/17035357?from=899260" title="Immobilie im Detail">EINFAMILIENHAUS - ECKGRUNDSTÜCK</a>
+        </h3>
+        <ul class="short-info">
+          <li class="info-rooms"><span class="list-item-desc">Zimmer</span><span class="list-item-value">4</span></li>
+          <li class="info-area"><span class="list-item-desc">Fläche</span><span class="list-item-value">ca. 120,00 m<sup>2</sup></span></li>
+          <li class="info-price"><span class="list-item-desc">Kaufpreis</span><span class="list-item-value">349.000,00&nbsp;€</span></li>
+        </ul>
+      </div>
+    </div>
+    """
+
+    def test_extracts_id_title_url_price(self, hm):
+        scraper = hm.HegerRealScraper(session=None)
+        cards = scraper._parse_cards(self.HTML)
+        assert len(cards) == 1
+        listing_id, title, url, price = cards[0]
+        assert listing_id == "heger_17035357"
+        assert title == "EINFAMILIENHAUS - ECKGRUNDSTÜCK"
+        assert url == "/objekt/17035357?from=899260"
+        # Must read the Kaufpreis li, not the area li that also carries digits.
+        assert price == 349000.0
+
+    def test_rental_without_kaufpreis_parses_to_zero(self, hm):
+        # Rentals show a "Miete" row instead of "Kaufpreis" -> no price -> 0.0,
+        # which the caller's price==0 filter drops.
+        html = """
+        <div class="realty-wrapper">
+          <h3><a href="/objekt/17208961?from=899260">2 ZIMMER - LOGGIA</a></h3>
+          <ul class="short-info">
+            <li><span class="list-item-desc">Miete</span><span class="list-item-value">799,00&nbsp;€</span></li>
+          </ul>
+        </div>
+        """
+        scraper = hm.HegerRealScraper(session=None)
+        cards = scraper._parse_cards(html)
+        assert len(cards) == 1
+        assert cards[0][3] == 0.0
+
+    def test_empty_page_yields_no_cards(self, hm):
+        scraper = hm.HegerRealScraper(session=None)
+        assert scraper._parse_cards("<div class='container'></div>") == []
+
+
 class TestImmoScout24CardParsing:
     HTML = """
     <ol data-testid="results-items">
@@ -1063,6 +1115,7 @@ def test_all_scrapers_are_constructible(hm):
         hm.ImmoLive24Scraper,
         hm.DingDongScraper,
         hm.SonnbergerScraper,
+        hm.HegerRealScraper,
     ]
     for cls in scraper_classes:
         assert cls(session=None) is not None
