@@ -129,9 +129,7 @@ class PropyloScraper:
         # The 9 Bundesland pages are independent of each other, so we paginate
         # them concurrently and merge with a single shared seen_ids set (a
         # listing could in principle appear under two regions).
-        per_url_results = await asyncio.gather(
-            *(self._fetch_one_url(u) for u in PROPYLO_URLS)
-        )
+        per_url_results = await asyncio.gather(*(self._fetch_one_url(u) for u in PROPYLO_URLS))
 
         results = []
         seen_ids: set = set()
