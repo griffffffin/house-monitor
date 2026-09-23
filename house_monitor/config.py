@@ -12,6 +12,7 @@ BLACKLIST = [
     "stellplatz",
     "garagen",
     "weinkeller",
+    "Erdkeller",
     "in Ungarn",
 ]
 
