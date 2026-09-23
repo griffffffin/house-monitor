@@ -165,13 +165,13 @@ class TestTitleSimilarity:
 
 class TestAlreadySeenElsewhere:
     @staticmethod
-    def _listing(hm, id_, title, price, source="test"):
+    def _listing(hm, id_, title, price, source="test", url="http://x"):
         now = "2026-01-01T00:00:00"
         return hm.Listing(
             id=id_,
             title=title,
             price=price,
-            url="http://x",
+            url=url,
             source=source,
             first_seen=now,
             last_seen=now,
@@ -196,6 +196,71 @@ class TestAlreadySeenElsewhere:
         other = self._listing(hm, "b_1", "Haus in Graz", 50000.0)
         candidate = self._listing(hm, "c_1", "Haus in Graz", 50000.0)
         assert monitor._already_seen_elsewhere(candidate, also_check=[other])
+
+    def test_cross_platform_quote_variant_is_deduped(self, hm):
+        # Regression: the Koblach "Igluhut" tiny house came in from both
+        # Immodirekt and Immokralle (an IS24 expose) with the only title
+        # difference being the quotes around "Igluhut"; at the same price it
+        # must be recognized as a duplicate.
+        monitor = _new_monitor(hm)
+        existing = self._listing(
+            hm,
+            "imd_1",
+            'Premium Tiny House "Igluhut" - sofort verfügbar',
+            39900.0,
+            source="immodirekt.at",
+        )
+        monitor.seen = {"imd_1": existing}
+        candidate = self._listing(
+            hm,
+            "ik_1",
+            "Premium Tiny House Igluhut - sofort verfügbar",
+            39900.0,
+            source="immokralle.com",
+        )
+        assert monitor._already_seen_elsewhere(candidate)
+
+    def test_shared_url_object_id_dedupes_across_platforms(self, hm):
+        # Robust layer: Immodirekt and Immokralle (an IS24 expose) carry the
+        # SAME 24-hex object id in the URL. Even with divergent titles AND a
+        # different price, it must be recognized as the same object.
+        monitor = _new_monitor(hm)
+        existing = self._listing(
+            hm,
+            "imd_1",
+            "Premium Tiny House Igluhut - sofort verfügbar",
+            39900.0,
+            source="immodirekt.at",
+            url=(
+                "https://www.immodirekt.at/immobilie/6842-koblach/"
+                "premium-tiny-house-igluhut-sofort-verfuegbar-"
+                "6a9848d484bfba0be7803920/"
+            ),
+        )
+        monitor.seen = {"imd_1": existing}
+        candidate = self._listing(
+            hm,
+            "ik_1",
+            "Ganz anderer Titel des Portals",  # title diverges
+            41000.0,  # price diverges too
+            source="immokralle.com",
+            url=(
+                "https://www.immobilienscout24.at/expose/"
+                "6a9848d484bfba0be7803920?utm_source=alleskralle.com"
+            ),
+        )
+        assert monitor._already_seen_elsewhere(candidate)
+
+    def test_object_key_none_does_not_false_match(self, hm):
+        # Two listings without a 24-hex id in the URL must not be deduped by
+        # the object-id layer just because both keys are None.
+        monitor = _new_monitor(hm)
+        existing = self._listing(hm, "wh_1", "Haus A", 30000.0, url="https://willhaben.at/x-111/")
+        monitor.seen = {"wh_1": existing}
+        candidate = self._listing(
+            hm, "dd_1", "Haus B", 30000.0, url="https://dingdong.at/immobilien/y-222"
+        )
+        assert not monitor._already_seen_elsewhere(candidate)
 
     def test_goldgrube_mojibake_title_would_not_have_matched(self, hm):
         # This test documents WHY the encoding fix matters: with a mojibake

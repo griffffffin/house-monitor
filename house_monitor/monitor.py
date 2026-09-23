@@ -227,11 +227,32 @@ class HouseMonitor:
         a, b = _norm(t1), _norm(t2)
         return (a in b) if len(a) <= len(b) else (b in a)
 
+    def _object_key(self, listing: Listing) -> Optional[str]:
+        """A stable cross-platform object identifier read from the URL: the
+        24-hex-char ImmoScout24-family expose ObjectId. immodirekt.at,
+        immobilienscout24.at and immobilien.net (and Immokralle when it
+        re-lists an IS24 expose) all carry the SAME id in the link, even
+        though each scraper stores its own prefixed listing id (imd_/is24_/
+        ik_/…) — Immokralle, for instance, keys on alleskralle's own data-id,
+        not the expose hex. Matching on this catches the same object even when
+        the syndicated titles diverge (translation/quoting/truncation)."""
+        import re as _re
+
+        m = _re.search(r"(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])", (listing.url or "").lower())
+        return m.group(0) if m else None
+
     def _already_seen_elsewhere(
         self, listing: Listing, also_check: Optional[List[Listing]] = None
     ) -> bool:
+        cand_key = self._object_key(listing)
         # Check the persistent DB
         for existing in self.seen.values():
+            if existing.id == listing.id:
+                continue
+            # Robust layer: same underlying object id in the URL (price/title
+            # need not match — a shared 24-hex expose id is definitive).
+            if cand_key and self._object_key(existing) == cand_key:
+                return True
             if existing.price == listing.price and self._titles_similar(
                 existing.title, listing.title
             ):
@@ -239,10 +260,12 @@ class HouseMonitor:
         # Also check listings already queued for notification in THIS run
         if also_check:
             for other in also_check:
-                if (
-                    other.id != listing.id
-                    and other.price == listing.price
-                    and self._titles_similar(other.title, listing.title)
+                if other.id == listing.id:
+                    continue
+                if cand_key and self._object_key(other) == cand_key:
+                    return True
+                if other.price == listing.price and self._titles_similar(
+                    other.title, listing.title
                 ):
                     return True
         return False
