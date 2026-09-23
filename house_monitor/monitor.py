@@ -214,6 +214,13 @@ class HouseMonitor:
             s = s.replace("–", "-").replace("—", "-")
             for _apos in ["’", "‘", "´", "`", "ʹ", "ʼ", "ʹ", "`"]:
                 s = s.replace(_apos, "'")
+            # Drop double-quote variants entirely: the same listing can be
+            # re-syndicated with or without quotes around a word (e.g.
+            # 'Tiny House "Igluhut"' from one portal vs 'Tiny House Igluhut'
+            # from another), which otherwise breaks the substring match below
+            # and lets a cross-platform duplicate through.
+            for _quote in ['"', "“", "”", "„", "‟", "«", "»", "″"]:
+                s = s.replace(_quote, "")
             s = _re.sub(r"\s+", " ", s)
             return s
 

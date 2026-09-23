@@ -149,6 +149,15 @@ class TestTitleSimilarity:
         monitor = _new_monitor(hm)
         assert monitor._titles_similar("Bauer's Haus", "Bauer’s Haus")
 
+    def test_double_quote_variants_are_normalized(self, hm):
+        # Same listing re-syndicated with vs without quotes around a word must
+        # still count as similar (real case: Immodirekt vs Immokralle/IS24).
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar(
+            'Premium Tiny House "Igluhut" - sofort verfügbar',
+            "Premium Tiny House Igluhut - sofort verfügbar",
+        )
+
     def test_unrelated_titles_do_not_match(self, hm):
         monitor = _new_monitor(hm)
         assert not monitor._titles_similar("Haus in Graz", "Wohnung in Wien")
