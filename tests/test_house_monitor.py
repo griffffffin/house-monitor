@@ -1499,3 +1499,35 @@ class TestScrapeAndNotifyRetryCollection:
 
         assert failed == []
         assert monitor.notifier.sent == []
+
+
+class TestScrapeAndNotifyDbUpdate:
+    _listing = staticmethod(TestScrapeAndNotifyRetryCollection._listing)
+
+    def test_hidden_price_drop_keeps_original_first_seen(self, hm, tmp_path):
+        # A price drop hidden as a cross-platform duplicate used to be stored
+        # with the scraper's fresh first_seen, erasing when we first saw it.
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        recent = datetime.now().isoformat()
+        original = self._listing(hm, "heger_1", "Mobilheim am Halbach in Rainfeld", 25000.0)
+        original.first_seen = "2026-07-23T16:00:00"
+        original.last_seen = recent
+        twin = self._listing(
+            hm, "wh_1", "Mobilheim am Halbach in Rainfeld", 18000.0, source="willhaben.at"
+        )
+        twin.last_seen = recent
+        monitor.seen = {"heger_1": original, "wh_1": twin}
+        dropped = self._listing(hm, "heger_1", "Mobilheim am Halbach in Rainfeld", 18000.0)
+        dropped.first_seen = recent
+
+        original_data_file = hm.DATA_FILE
+        hm.DATA_FILE = str(tmp_path / "seen.json")
+        try:
+            asyncio.run(monitor._scrape_and_notify([_OkScraper([dropped])]))
+        finally:
+            hm.DATA_FILE = original_data_file
+
+        assert monitor.notifier.sent == []  # hidden as a duplicate of wh_1
+        assert monitor.seen["heger_1"].price == 18000.0
+        assert monitor.seen["heger_1"].first_seen == "2026-07-23T16:00:00"

@@ -419,6 +419,11 @@ class HouseMonitor:
                 if existing.price != listing.price:
                     listing.price_changed = True
                     listing.old_price = existing.price
+                    # The scraper stamps first_seen with "now"; keep the real
+                    # one, since the duplicate branch below stores this object
+                    # directly (the post-email update restores it only for
+                    # listings that went out).
+                    listing.first_seen = existing.first_seen
                     # Also filter cross-platform duplicates on price drops
                     if self._already_seen_elsewhere(listing, also_check=to_notify):
                         logging.info(
