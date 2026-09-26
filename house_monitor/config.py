@@ -29,6 +29,14 @@ SKIP_NO_PERSIST = [
 # price they silently swallowed genuinely new listings/price drops.
 TITLE_SUBSTRING_MIN_LEN = 20
 
+# Only DB entries seen within this many days count as a live cross-platform
+# twin in HouseMonitor._already_seen_elsewhere. A listing that vanished
+# months ago can't be a copy of one that appears (or drops its price) today;
+# without this window a stale entry could hide a new listing indefinitely.
+# last_seen is refreshed for every fetched listing on every run, so live
+# twins always stay well inside the window.
+DUPLICATE_LOOKBACK_DAYS = 60
+
 DATA_FILE = f"/opt/house-monitor/{DATA_FILE}"
 
 if os.getenv("INVOCATION_ID"):  # Systemd service mode

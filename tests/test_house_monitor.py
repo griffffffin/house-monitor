@@ -13,6 +13,7 @@ hand-built HTML/data fixtures.
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
@@ -192,17 +193,45 @@ class TestTitleSimilarity:
 
 class TestAlreadySeenElsewhere:
     @staticmethod
-    def _listing(hm, id_, title, price, source="test", url="http://x"):
-        now = "2026-01-01T00:00:00"
+    def _listing(hm, id_, title, price, source="test", url="http://x", days_ago=0):
+        # Timestamps are relative to "now": DB entries older than
+        # DUPLICATE_LOOKBACK_DAYS are deliberately ignored by the dedup check.
+        ts = (datetime.now() - timedelta(days=days_ago)).isoformat()
         return hm.Listing(
             id=id_,
             title=title,
             price=price,
             url=url,
             source=source,
-            first_seen=now,
-            last_seen=now,
+            first_seen=ts,
+            last_seen=ts,
         )
+
+    def test_stale_db_entry_is_not_a_live_duplicate(self, hm):
+        # An identical title at the same price, but last seen months ago,
+        # can't be a copy of a listing that shows up today.
+        monitor = _new_monitor(hm)
+        stale = self._listing(
+            hm, "a_1", "Haus in Graz", 50000.0, days_ago=hm.DUPLICATE_LOOKBACK_DAYS + 30
+        )
+        monitor.seen = {"a_1": stale}
+        candidate = self._listing(hm, "b_1", "Haus in Graz", 50000.0)
+        assert not monitor._already_seen_elsewhere(candidate)
+
+    def test_recently_seen_db_entry_is_still_a_duplicate(self, hm):
+        monitor = _new_monitor(hm)
+        recent = self._listing(hm, "a_1", "Haus in Graz", 50000.0, days_ago=3)
+        monitor.seen = {"a_1": recent}
+        candidate = self._listing(hm, "b_1", "Haus in Graz", 50000.0)
+        assert monitor._already_seen_elsewhere(candidate)
+
+    def test_unparseable_last_seen_is_kept(self, hm):
+        monitor = _new_monitor(hm)
+        existing = self._listing(hm, "a_1", "Haus in Graz", 50000.0)
+        existing.last_seen = "not-a-timestamp"
+        monitor.seen = {"a_1": existing}
+        candidate = self._listing(hm, "b_1", "Haus in Graz", 50000.0)
+        assert monitor._already_seen_elsewhere(candidate)
 
     def test_matches_against_persistent_db(self, hm):
         monitor = _new_monitor(hm)

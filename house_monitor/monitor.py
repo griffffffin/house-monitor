@@ -16,6 +16,7 @@ import aiohttp
 from .config import (
     BLACKLIST,
     DATA_FILE,
+    DUPLICATE_LOOKBACK_DAYS,
     EMAIL_CONFIG,
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
@@ -261,10 +262,19 @@ class HouseMonitor:
         self, listing: Listing, also_check: Optional[List[Listing]] = None
     ) -> bool:
         cand_key = self._object_key(listing)
+        cutoff = datetime.now() - timedelta(days=DUPLICATE_LOOKBACK_DAYS)
         # Check the persistent DB
         for existing in self.seen.values():
             if existing.id == listing.id:
                 continue
+            # Skip stale entries: a listing nobody has seen for weeks is not a
+            # live copy of this one. An unparseable timestamp is kept (the
+            # conservative choice — at worst we hide a duplicate as before).
+            try:
+                if datetime.fromisoformat(existing.last_seen) < cutoff:
+                    continue
+            except (TypeError, ValueError):
+                pass
             # Robust layer: same underlying object id in the URL (price/title
             # need not match — a shared 24-hex expose id is definitive).
             if cand_key and self._object_key(existing) == cand_key:
