@@ -16,6 +16,16 @@ venv/
 seen-houses.json
 *.log
 
+# Private personal documents kept next to the code (spreadsheets and their
+# dated backups) — never part of the public repo
+*.xlsx
+*.xls
+*.ods
+*.csv
+~$*
+.~lock.*#
+backup/
+
 # Secrets — must never end up in the repo
 .env
 secrets.env
