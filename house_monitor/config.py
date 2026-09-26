@@ -22,6 +22,13 @@ SKIP_NO_PERSIST = [
     "reserviert",
 ]
 
+# Cross-platform duplicate detection (HouseMonitor._titles_similar): a title
+# shorter than this (after normalization) only counts as "similar" on an exact
+# match, never as a substring. Generic one-word titles like "Mobilheim" or
+# "Haus" are contained in countless unrelated titles, and at a common round
+# price they silently swallowed genuinely new listings/price drops.
+TITLE_SUBSTRING_MIN_LEN = 20
+
 DATA_FILE = f"/opt/house-monitor/{DATA_FILE}"
 
 if os.getenv("INVOCATION_ID"):  # Systemd service mode

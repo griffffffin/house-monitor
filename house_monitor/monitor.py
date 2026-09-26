@@ -22,6 +22,7 @@ from .config import (
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SKIP_NO_PERSIST,
+    TITLE_SUBSTRING_MIN_LEN,
 )
 from .email_notifier import EmailNotifier
 from .logging_setup import NOTICE, _fmt_count, log_notice
@@ -221,11 +222,26 @@ class HouseMonitor:
             # and lets a cross-platform duplicate through.
             for _quote in ['"', "“", "”", "„", "‟", "«", "»", "″"]:
                 s = s.replace(_quote, "")
+            # Emphasis punctuation varies between re-syndications of the same
+            # listing ("Kein Hauptwohnsitz" vs "Kein Hauptwohnsitz!"); drop it
+            # so those still compare equal under the exact-match rule below.
+            s = s.replace("!", "").replace("?", "")
             s = _re.sub(r"\s+", " ", s)
-            return s
+            return s.strip(" .,;:")
+
+        import re as _re
 
         a, b = _norm(t1), _norm(t2)
-        return (a in b) if len(a) <= len(b) else (b in a)
+        if a == b:
+            return True
+        short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+        # A short, generic title ("Mobilheim", "Haus") is a substring of
+        # countless unrelated titles — only allow a substring match when the
+        # shorter title is specific enough, and only on whole-word boundaries
+        # (so "TG-Platz Nr. 4" doesn't match "TG-Platz Nr. 42").
+        if len(short) < TITLE_SUBSTRING_MIN_LEN:
+            return False
+        return _re.search(r"(?<!\w)" + _re.escape(short) + r"(?!\w)", long_) is not None
 
     def _object_key(self, listing: Listing) -> Optional[str]:
         """A stable cross-platform object identifier read from the URL: the

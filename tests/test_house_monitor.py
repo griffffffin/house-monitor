@@ -138,8 +138,35 @@ class TestTitleSimilarity:
         assert monitor._titles_similar("  Haus IN Graz  ", "haus in graz")
 
     def test_substring_match_counts_as_similar(self, hm):
+        # Real case: one portal appends "Provisionsfrei" to the same title.
         monitor = _new_monitor(hm)
-        assert monitor._titles_similar("Haus in Graz", "Schönes Haus in Graz mit Garten")
+        assert monitor._titles_similar(
+            "Mobilheim nähe Sieghartskirchen",
+            "Mobilheim nähe Sieghartskirchen Provisionsfrei",
+        )
+
+    def test_short_generic_title_is_not_a_substring_match(self, hm):
+        # Regression (2026-09-24): an unrelated April listing titled just
+        # "Mobilheim" at the same 18 000 € swallowed the Rainfeld price drop
+        # on all three portals, because "mobilheim" is a substring of it.
+        monitor = _new_monitor(hm)
+        assert not monitor._titles_similar(
+            "Mobilheim", "MOBILHEIM - KLEIN - FEIN - KÖNNTE DEINS SEIN"
+        )
+        assert not monitor._titles_similar("Haus", "Bauernhaus in Sonnenlage mit Grundstück")
+
+    def test_short_titles_still_match_exactly(self, hm):
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar("Mobilheim", "mobilheim")
+
+    def test_emphasis_punctuation_is_ignored(self, hm):
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar("Kein Hauptwohnsitz", "Kein Hauptwohnsitz!")
+        assert monitor._titles_similar("Wohn- oder Freizeitdomizil", "WOHN- ODER FREIZEITDOMIZIL?")
+
+    def test_substring_must_end_on_a_word_boundary(self, hm):
+        monitor = _new_monitor(hm)
+        assert not monitor._titles_similar("Tiefgaragenplatz Nr. 4", "Tiefgaragenplatz Nr. 42")
 
     def test_html_entities_are_unescaped_before_compare(self, hm):
         monitor = _new_monitor(hm)
@@ -183,6 +210,16 @@ class TestAlreadySeenElsewhere:
         monitor.seen = {"a_1": existing}
         candidate = self._listing(hm, "b_1", "Haus in Graz", 50000.0)
         assert monitor._already_seen_elsewhere(candidate)
+
+    def test_generic_short_title_at_same_price_does_not_hide_listing(self, hm):
+        # The 2026-09-24 Rainfeld case end-to-end: a stale, unrelated
+        # "Mobilheim" entry at the same price must not count as a duplicate.
+        monitor = _new_monitor(hm)
+        monitor.seen = {"wh_1": self._listing(hm, "wh_1", "Mobilheim", 18000.0)}
+        candidate = self._listing(
+            hm, "heger_1", "MOBILHEIM - KLEIN - FEIN - KÖNNTE DEINS SEIN", 18000.0
+        )
+        assert not monitor._already_seen_elsewhere(candidate)
 
     def test_different_price_does_not_match(self, hm):
         monitor = _new_monitor(hm)
