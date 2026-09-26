@@ -148,11 +148,11 @@ class TestTitleSimilarity:
 
     def test_short_generic_title_is_not_a_substring_match(self, hm):
         # Regression (2026-09-24): an unrelated April listing titled just
-        # "Mobilheim" at the same 18 000 € swallowed the Rainfeld price drop
+        # "Mobilheim" at the same price swallowed a real price drop
         # on all three portals, because "mobilheim" is a substring of it.
         monitor = _new_monitor(hm)
         assert not monitor._titles_similar(
-            "Mobilheim", "MOBILHEIM - KLEIN - FEIN - KÖNNTE DEINS SEIN"
+            "Mobilheim", "GEMÜTLICHES MOBILHEIM - IDEAL FÜR ZWEI PERSONEN"
         )
         assert not monitor._titles_similar("Haus", "Bauernhaus in Sonnenlage mit Grundstück")
 
@@ -241,12 +241,12 @@ class TestAlreadySeenElsewhere:
         assert monitor._already_seen_elsewhere(candidate)
 
     def test_generic_short_title_at_same_price_does_not_hide_listing(self, hm):
-        # The 2026-09-24 Rainfeld case end-to-end: a stale, unrelated
+        # The 2026-09-24 case end-to-end: a stale, unrelated
         # "Mobilheim" entry at the same price must not count as a duplicate.
         monitor = _new_monitor(hm)
         monitor.seen = {"wh_1": self._listing(hm, "wh_1", "Mobilheim", 18000.0)}
         candidate = self._listing(
-            hm, "heger_1", "MOBILHEIM - KLEIN - FEIN - KÖNNTE DEINS SEIN", 18000.0
+            hm, "heger_1", "GEMÜTLICHES MOBILHEIM - IDEAL FÜR ZWEI PERSONEN", 18000.0
         )
         assert not monitor._already_seen_elsewhere(candidate)
 
@@ -1510,15 +1510,15 @@ class TestScrapeAndNotifyDbUpdate:
         monitor = _new_monitor(hm)
         monitor.notifier = _StubNotifier()
         recent = datetime.now().isoformat()
-        original = self._listing(hm, "heger_1", "Mobilheim am Halbach in Rainfeld", 25000.0)
+        original = self._listing(hm, "heger_1", "Mobilheim mit Garten am Badesee", 25000.0)
         original.first_seen = "2026-07-23T16:00:00"
         original.last_seen = recent
         twin = self._listing(
-            hm, "wh_1", "Mobilheim am Halbach in Rainfeld", 18000.0, source="willhaben.at"
+            hm, "wh_1", "Mobilheim mit Garten am Badesee", 18000.0, source="willhaben.at"
         )
         twin.last_seen = recent
         monitor.seen = {"heger_1": original, "wh_1": twin}
-        dropped = self._listing(hm, "heger_1", "Mobilheim am Halbach in Rainfeld", 18000.0)
+        dropped = self._listing(hm, "heger_1", "Mobilheim mit Garten am Badesee", 18000.0)
         dropped.first_seen = recent
 
         original_data_file = hm.DATA_FILE
