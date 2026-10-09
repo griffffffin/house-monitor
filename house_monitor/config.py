@@ -155,6 +155,13 @@ _PROPYLO_REGIONS = [
 ]
 PROPYLO_QUERY = f"?price_min={EUR_PRICE_FROM}&price_max={EUR_PRICE_TO}&ordering=price_asc"
 PROPYLO_URLS = [f"{PROPYLO_BASE_URL}/immobilien/{r}" for r in _PROPYLO_REGIONS]
+# Each Propylo card links to /verkaufsimmobilie/<id>, which redirects to the
+# original ad on another portal. New cards are resolved one at a time, this
+# many seconds apart (the site answers bursts with HTTP 429); a 429 is
+# retried after PROPYLO_RESOLVE_BACKOFF × attempt seconds.
+PROPYLO_RESOLVE_DELAY = 1.5
+PROPYLO_RESOLVE_ATTEMPTS = 4
+PROPYLO_RESOLVE_BACKOFF = 10.0
 
 # used by: HegerRealScraper
 HEGERREAL_BASE_URL = "https://www.hegerreal.at"

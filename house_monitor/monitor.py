@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import aiofiles
 import aiohttp
@@ -264,6 +264,22 @@ class HouseMonitor:
         m = _re.search(r"(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])", (listing.url or "").lower())
         return m.group(0) if m else None
 
+    def _origin_lookup(
+        self, run_listings: List[Listing], own_sources: set
+    ) -> Callable[[str], bool]:
+        """is_known(key) for an aggregator's screen_listings(): whether an
+        original ad's key — a DB id (wh_123) or an ImmoScout24-family expose
+        id — belongs to an ad already in the seen-DB or in this run. The
+        aggregator's own entries don't count (they carry the original's URL)."""
+        others = [
+            listing
+            for listing in list(self.seen.values()) + run_listings
+            if listing.source not in own_sources
+        ]
+        ids = {listing.id for listing in others}
+        keys = {key for key in (self._object_key(listing) for listing in others) if key}
+        return lambda key: key in ids or key in keys
+
     def _already_seen_elsewhere(
         self, listing: Listing, also_check: Optional[List[Listing]] = None
     ) -> bool:
@@ -360,6 +376,7 @@ class HouseMonitor:
         )
 
         all_listings: List[Listing] = []
+        ok_results: List[Any] = []
         summary_rows = []
         for scraper, result in zip(scrapers, scraper_results):
             if isinstance(result, BaseException):
@@ -378,6 +395,7 @@ class HouseMonitor:
                 # now, and queue the source for the same-day retry pass.
                 failed.append(scraper)
             all_listings.extend(result)
+            ok_results.append((scraper, result))
             label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
             if label:
                 name, unit = label
@@ -405,6 +423,37 @@ class HouseMonitor:
                 log_notice(f"{name:<{name_width}}: {count_str:>{num_width}} {unit}")
 
         log_notice(f"Total listings fetched: {len(all_listings)}")
+
+        # Source-specific screening ahead of the duplicate check: an
+        # aggregator (Propylo) resolves its new cards to the original ads,
+        # keeps houses only and drops copies of ads a scraped portal has.
+        for scraper, result in ok_results:
+            if not hasattr(scraper, "screen_listings"):
+                continue
+            # Blacklisted titles are left to the loop below (stored silently
+            # there) — no point resolving them.
+            to_screen = [
+                listing
+                for listing in result
+                if not any(
+                    word.lower() in listing.title.lower() for word in SKIP_NO_PERSIST + BLACKLIST
+                )
+            ]
+            normal, silent, deferred = await scraper.screen_listings(
+                to_screen,
+                lambda lid: self.seen[lid].url if lid in self.seen else None,
+                self._origin_lookup(all_listings, {listing.source for listing in result}),
+            )
+            dropped = {id(listing) for listing in silent + deferred}
+            all_listings = [listing for listing in all_listings if id(listing) not in dropped]
+            for listing in silent:
+                existing = self.seen.get(listing.id)
+                if existing:
+                    listing.first_seen = existing.first_seen
+                self.seen[listing.id] = listing
+                db_changed = True
+            if deferred and scraper not in failed:
+                failed.append(scraper)
 
         for listing in all_listings:
             title_lower = listing.title.lower()

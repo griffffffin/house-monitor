@@ -3,14 +3,86 @@ import html as _html
 import logging
 import re
 from datetime import datetime
-from typing import List
+from typing import Callable, List, Optional, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, PROPYLO_PROBE_URL, PROPYLO_QUERY, PROPYLO_URLS
+from ..config import (
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+    PROPYLO_PROBE_URL,
+    PROPYLO_QUERY,
+    PROPYLO_RESOLVE_ATTEMPTS,
+    PROPYLO_RESOLVE_BACKOFF,
+    PROPYLO_RESOLVE_DELAY,
+    PROPYLO_URLS,
+)
 from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
+
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+# How the original portals' ad URLs map onto our own DB ids.
+_WILLHABEN_ID = re.compile(r"willhaben\.at/[^?#]*-(\d{6,})/?(?:[?#]|$)")
+_WILLHABEN_AD_ID = re.compile(r"willhaben\.at/.*[?&]adId=(\d+)")
+_WILLHABEN_CATEGORY = re.compile(r"willhaben\.at/iad/immobilien/d/([a-z-]+)/")
+_DIBEO_ID = re.compile(r"dibeo\.at/expose/(\d+)")
+_WOHNNET_ID = re.compile(r"wohnnet\.at/immobilien/[^?#]*-(\d{6,})(?:[/?#]|$)")
+# The ImmoScout24 family (immobilienscout24.at / immodirekt / immobilien.net)
+# shares a 24-hex expose id — the monitor's _object_key matches on it.
+_OBJECT_KEY = re.compile(r"(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])")
+
+
+def origin_key(url: str) -> Optional[str]:
+    """The id under which a scraped portal stores this original ad: a DB id
+    (wh_/dibeo_/wn_) or an ImmoScout24-family expose id. None for portals we
+    don't scrape (immowelt, urbanhome, …) — those ads are new to us."""
+    for pattern, prefix in (
+        (_WILLHABEN_ID, "wh_"),
+        (_WILLHABEN_AD_ID, "wh_"),
+        (_DIBEO_ID, "dibeo_"),
+        (_WOHNNET_ID, "wn_"),
+    ):
+        m = pattern.search(url or "")
+        if m:
+            return prefix + m.group(1)
+    m = _OBJECT_KEY.search((url or "").lower())
+    return m.group(0) if m else None
+
+
+# Propylo's cards carry no property type, so outside willhaben (whose ad
+# URL names its category) the type is read from the original URL and the
+# title: a house word in the title wins, otherwise any of these marks a
+# non-house (apartments, parking). Offices and shops stay: the owner wants
+# them (the other sources crawl Büro/Geschäftslokal categories too).
+_HOUSE_WORDS = ("haus", "häus", "mobilheim", "bungalow", "hütte", "chalet")
+_NOT_A_HOUSE_WORDS = (
+    "wohnung",
+    "garçonni",
+    "garconni",
+    "apartment",
+    "appartement",
+    "penthouse",
+    "maisonette",
+    "parkplatz",
+    "tiefgarage",
+)
+
+
+def is_house(origin_url: str, title: str) -> bool:
+    """Houses only (the owner's choice for this aggregator): Propylo lists
+    every property type, apartments and parking spaces included. A willhaben
+    target URL names its category exactly; for the other portals see
+    _HOUSE_WORDS / _NOT_A_HOUSE_WORDS (an odd apartment can still slip
+    through when neither its URL nor its title says what it is)."""
+    m = _WILLHABEN_CATEGORY.search(origin_url or "")
+    if m:
+        return m.group(1).startswith(("haus", "ferien"))
+    lowered_title = (title or "").lower()
+    if any(word in lowered_title for word in _HOUSE_WORDS):
+        return True
+    text = f"{origin_url} {lowered_title}".lower()
+    return not any(word in text for word in _NOT_A_HOUSE_WORDS)
 
 
 class PropyloScraper:
@@ -29,6 +101,10 @@ class PropyloScraper:
       card is one link); title: its inner <h2>; price: div.price ("15.000 €",
       German format); URL: the (already absolute) href.
     ID: the numeric /verkaufsimmobilie/<id> (pro_<id>).
+    That card URL redirects to the original ad on another portal:
+      screen_listings() resolves each NEW card (paced — bursts get HTTP 429),
+      keeps houses only, and drops copies of ads a scraped portal already has
+      (by the original ad's id); the rest are emailed with the original URL.
     Pagination: page 1 = the region URL, page N = region URL + "/N", with the
       query string appended AFTER the /N segment; past the last page the server
       returns HTTP 200 with 0 cards (no 404).
@@ -154,3 +230,80 @@ class PropyloScraper:
         """Page 1 of the search without the price range, parsed like a normal
         page — for the daily source health check (house_monitor/health.py)."""
         return self._parse_cards(await fetch_page(self.session, PROPYLO_PROBE_URL))
+
+    async def _resolve(self, url: str) -> Tuple[bool, Optional[str]]:
+        """Follow one card's redirect. Returns (resolved, original ad URL);
+        the URL is None when Propylo serves the ad itself. resolved=False
+        means "can't tell this run" (HTTP 429 after the retries, another
+        status, a network error) — the card is retried on the next run."""
+        for attempt in range(1, PROPYLO_RESOLVE_ATTEMPTS + 1):
+            try:
+                async with self.session.get(url, allow_redirects=False) as resp:
+                    status, location = resp.status, resp.headers.get("Location", "")
+            except Exception as e:
+                logging.warning(f"Propylo.com: resolving {url} failed: {type(e).__name__}: {e}")
+                return False, None
+            if status in _REDIRECT_STATUSES and location:
+                return True, location
+            if status == 200:
+                return True, None
+            if status == 429 and attempt < PROPYLO_RESOLVE_ATTEMPTS:
+                await asyncio.sleep(PROPYLO_RESOLVE_BACKOFF * attempt)
+                continue
+            logging.warning(f"Propylo.com: HTTP {status} resolving {url}")
+            return False, None
+        return False, None
+
+    async def screen_listings(
+        self,
+        listings: List[Listing],
+        stored_url: Callable[[str], Optional[str]],
+        is_known: Callable[[str], bool],
+    ) -> Tuple[List[Listing], List[Listing], List[Listing]]:
+        """Sort this run's cards before the monitor's duplicate check.
+        stored_url(listing_id) is the URL kept in the seen-DB (None if the card
+        is new); is_known(key) says whether an original ad's origin_key() is
+        already in the DB or in this run. Returns (normal, silent, deferred):
+          normal   – the usual new / price-change handling, with the original
+                     ad's URL;
+          silent   – stored without an email: not a house, or a copy of an ad
+                     a scraped portal has (that portal reports it and its price
+                     changes);
+          deferred – unresolved this run; left out entirely, retried next run.
+        """
+        normal: List[Listing] = []
+        silent: List[Listing] = []
+        deferred: List[Listing] = []
+        resolved_any = False
+        for listing in listings:
+            known_url = stored_url(listing.id)
+            if known_url is not None:
+                # Seen before: keep the original-ad URL resolved back then.
+                if "propylo.com" not in known_url:
+                    listing.url = known_url
+                key = origin_key(listing.url)
+                (silent if key and is_known(key) else normal).append(listing)
+                continue
+
+            if resolved_any:
+                await asyncio.sleep(PROPYLO_RESOLVE_DELAY)
+            resolved_any = True
+            resolved, original = await self._resolve(listing.url)
+            if not resolved:
+                deferred.append(listing)
+                continue
+            if original:
+                listing.url = original
+            if not is_house(original or "", listing.title):
+                logging.info(f"Propylo.com: not a house, stored silently: {listing.title}")
+                silent.append(listing)
+                continue
+            key = origin_key(original or "")
+            if key and is_known(key):
+                logging.info(f"Propylo.com: copy of {key}, stored silently: {listing.title}")
+                silent.append(listing)
+                continue
+            normal.append(listing)
+        if deferred:
+            logging.warning(f"Propylo.com: {len(deferred)} new card(s) unresolved, retried later")
+        return normal, silent, deferred
