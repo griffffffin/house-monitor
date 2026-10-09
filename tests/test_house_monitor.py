@@ -918,6 +918,45 @@ class TestImmoScout24CardParsing:
         assert url == "https://www.immobilienscout24.at/expose/12345678"
         assert price == 65000
 
+    # The markup since the ~2026-08 redesign (trimmed from a live page): the
+    # price facts are <li class="PriceKeyFact-…"> with no "PriceKeyFacts" <ul>.
+    # The old selector read no price from any card, so every listing was
+    # dropped as price=0 for weeks.
+    HTML_2026 = """
+    <ol data-testid="results-items">
+      <li class="ListingCard-listing-card-X9D">
+        <a href="/expose/69f0d0744631ea0b033b5119"><h2>Mobilheim am See</h2>
+          <ul class="FlexBox-flexbox-X4q">
+            <li class="PriceKeyFact-price-key-fact-UBF FlexBox-flexbox-X4q">
+              <span class="Text-font-weight--bold-MjP">10.000 €</span></li>
+          </ul></a>
+      </li>
+      <li class="AdSlot-ad-slot-1Qx"></li>
+      <li class="ListingCard-listing-card-X9D">
+        <a href="/expose/6ac8c8730fef2ebeab6c7030"><h2>Einfamilienhaus</h2>
+          <ul class="FlexBox-flexbox-X4q">
+            <li class="PriceKeyFact-price-key-fact-UBF"><span>ab 201,19 €/m²</span></li>
+            <li class="PriceKeyFact-price-key-fact-UBF"><span>ab 16.900 €</span></li>
+          </ul></a>
+      </li>
+      <li class="ListingCard-listing-card-X9D">
+        <a href="/expose/6a7c61bc51295b3defb5c154"><h2>Besichtigung am Mittwoch</h2>
+          <ul><li class="PriceKeyFact-price-key-fact-UBF">
+            <span>29.000 €</span> <span>statt 35.000 €</span> <span>-17%</span></li></ul></a>
+      </li>
+    </ol>
+    """
+
+    def test_current_markup_prices_are_read(self, hm):
+        cards = hm.ImmoScout24Scraper(session=None)._parse_cards(self.HTML_2026)
+        # The ad slot (no link) is skipped; the €/m² fact never wins over the
+        # total price; a discounted price reads the current one, not the old.
+        assert [(c[0], c[3]) for c in cards] == [
+            ("is24_69f0d0744631ea0b033b5119", 10000.0),
+            ("is24_6ac8c8730fef2ebeab6c7030", 16900.0),
+            ("is24_6a7c61bc51295b3defb5c154", 29000.0),
+        ]
+
 
 class TestDibeoCardParsing:
     HTML = """

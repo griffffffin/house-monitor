@@ -42,7 +42,10 @@ class ImmoScout24Scraper:
             title = title_tag.text.strip() if title_tag else "No title"
 
             price = 0.0
-            price_elements = item.select('ul[class*="PriceKeyFacts"] li')
+            # Current markup: one <li class="PriceKeyFact-price-key-fact-…"> per
+            # fact (price, €/m²); before the ~2026-08 redesign the <li>s sat in
+            # a <ul class="PriceKeyFacts…">. Both are accepted.
+            price_elements = item.select('li[class*="PriceKeyFact"], ul[class*="PriceKeyFacts"] li')
             for el in price_elements:
                 text = el.text.strip()
                 if "€" in text and "/m²" not in text:
