@@ -6,7 +6,8 @@ from typing import List, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import IMMOSCOUT_URL
+from ..config import IMMOSCOUT_PROBE_URL, IMMOSCOUT_URL
+from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 
@@ -107,3 +108,8 @@ class ImmoScout24Scraper:
 
         logging.info(f"ImmoScout24: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, IMMOSCOUT_PROBE_URL))

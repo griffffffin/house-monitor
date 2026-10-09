@@ -1,13 +1,28 @@
 import asyncio
 import logging
+import urllib.request
 from datetime import datetime
 from typing import List
 
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMOKRALLE_URLS
+from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMOKRALLE_PROBE_URL, IMMOKRALLE_URLS
 from ..models import Listing, parse_de_price
+
+_IK_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-AT,de;q=0.9,en;q=0.7",
+}
+
+
+def _urlopen_text(url: str) -> str:
+    """Synchronous urllib GET — unlike aiohttp, it doesn't percent-encode the
+    [ ] characters in the URL, which the server rejects. Raises on failure."""
+    req = urllib.request.Request(url, headers=_IK_HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 
 class ImmokralleScraper:
@@ -55,22 +70,12 @@ class ImmokralleScraper:
     async def _fetch_one_url(self, base_url: str) -> List[Listing]:
         """We use urllib instead of aiohttp here, because aiohttp always
         percent-encodes the [ ] characters in the URL, which the server rejects."""
-        import urllib.request as _urllib
-
         url_results = []
         seen_ids: set = set()
-        ik_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "de-AT,de;q=0.9,en;q=0.7",
-        }
 
         def _fetch_url(url: str) -> str | None:
-            """Synchronous urllib fetch — doesn't percent-encode the [ ] characters."""
-            req = _urllib.Request(url, headers=ik_headers)
             try:
-                with _urllib.urlopen(req, timeout=30) as resp:
-                    return resp.read().decode("utf-8", errors="replace")
+                return _urlopen_text(url)
             except Exception as e:
                 logging.error(f"Immokralle.com: urllib error: {type(e).__name__}: {e} – {url}")
                 return None
@@ -141,3 +146,10 @@ class ImmokralleScraper:
 
         logging.info(f"Immokralle: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        loop = asyncio.get_event_loop()
+        html_text = await loop.run_in_executor(None, _urlopen_text, IMMOKRALLE_PROBE_URL)
+        return self._parse_cards(html_text)

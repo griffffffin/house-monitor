@@ -84,3 +84,21 @@ async def fetch_bytes(
         return resp.status, await resp.read(), resp.charset
 
     return await _get_with_retry(session, url, _read, attempts=attempts, backoff=backoff, **kwargs)
+
+
+class HTTPStatusError(Exception):
+    """A non-200 answer where the caller can only use a 200 page."""
+
+    def __init__(self, status: int):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+async def fetch_page(session: aiohttp.ClientSession, url: str, **kwargs: Any) -> str:
+    """fetch_text for the scrapers' health-check probe(): returns the body of a
+    200 response and raises HTTPStatusError on any other status, so a blocked
+    or vanished page counts as a failed probe instead of an empty one."""
+    status, body = await fetch_text(session, url, **kwargs)
+    if status != 200:
+        raise HTTPStatusError(status)
+    return body

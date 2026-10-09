@@ -7,7 +7,14 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMODIREKT_BASE_URL, IMMODIREKT_URLS
+from ..config import (
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+    IMMODIREKT_BASE_URL,
+    IMMODIREKT_PROBE_URL,
+    IMMODIREKT_URLS,
+)
+from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 
@@ -141,3 +148,8 @@ class ImmodirektScraper:
 
         logging.info(f"Immodirekt: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, IMMODIREKT_PROBE_URL))

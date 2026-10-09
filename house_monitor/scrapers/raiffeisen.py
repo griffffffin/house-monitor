@@ -7,8 +7,14 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, RAIFFEISEN_BASE_URL, RAIFFEISEN_SEARCH_URL
-from ..fetch import fetch_text
+from ..config import (
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+    RAIFFEISEN_BASE_URL,
+    RAIFFEISEN_PROBE_URL,
+    RAIFFEISEN_SEARCH_URL,
+)
+from ..fetch import fetch_page, fetch_text
 from ..models import Listing, parse_de_price
 
 
@@ -136,3 +142,8 @@ class RaiffeisenScraper:
 
         logging.info(f"Raiffeisen-Immobilien: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, RAIFFEISEN_PROBE_URL))

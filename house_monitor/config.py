@@ -269,3 +269,73 @@ GOLDGRUBE_URLS = [
     "https://www.goldgrube.at/immobilien/ferienimmobilien-kaufen/1211.html",
     "https://www.goldgrube.at/immobilien/gewerbeimmobilien-kaufen/1209.html",
 ]
+
+# ---------------------------------------------------------------------------
+# Daily source health check (house_monitor/health.py)
+# ---------------------------------------------------------------------------
+# Alert by email once a source has looked broken on this many consecutive
+# daily checks; repeated every day while it stays broken.
+HEALTH_MIN_CONSECUTIVE = 2
+# Consecutive-failure counters + the date of the last check, kept next to the
+# seen-DB so a service restart doesn't reset the streak.
+HEALTH_STATE_FILE = os.path.join(os.path.dirname(DATA_FILE), "health-check-state.json")
+# A probe that errors is retried this many times, this many seconds apart.
+HEALTH_PROBE_ATTEMPTS = 3
+HEALTH_PROBE_RETRY_DELAY = 5.0
+
+# Probe targets: page 1 of each source's search WITHOUT the price range.
+# The real search URLs carry 3000-70000 € server-side, so a working site can
+# legitimately return 0 results there for weeks; the unfiltered page can't be
+# empty unless the site or our parser broke. Sources whose normal URL has no
+# server-side price filter (Goldgrube, Sonnberger, HegerReal) reuse it.
+IMMOSCOUT_PROBE_URL = (
+    "https://www.immobilienscout24.at/regional/oesterreich/haus-kaufen/geringster-preis-zuerst"
+)
+DIBEO_PROBE_URL = "https://www.dibeo.at/obj/h-haus-kauf/cv"
+FINDMYHOME_PROBE_URL = (
+    "https://www.findmyhome.at/index.php?id=14&1=1&module=select&land=AT&lang=de&h_e=1&pp=100"
+)
+WILLHABEN_PROBE_URL = "https://www.willhaben.at/iad/immobilien/haus-kaufen/haus-angebote?sort=3"
+FINDHEIM_PROBE_URL = (
+    "https://findheim.at/de/immobilien"
+    "?f%5BbuyRentAll%5D=buy"
+    "&f%5Btypes%5D%5B%5D=house"
+    "&f%5Btypes%5D%5B%5D=commercial_leisure"
+    "&sort=priceAsc"
+)
+# Default sort: Wohnnet also lists foreign (mostly German) properties, and its
+# cheapest-first page 1 is entirely German ones, which _parse_cards skips by
+# design — the probe would look broken even though the parser works.
+WOHNNET_PROBE_URL = "https://www.wohnnet.at/immobilien/haeuser?intention=kauf"
+DERSTANDARD_PROBE_URL = (
+    "https://immobilien.derstandard.at/suche/oesterreich/kaufen-haus?sorting=priceAscending"
+)
+IMMODIREKT_PROBE_URL = "https://www.immodirekt.at/haeuser-kaufen/oesterreich?sort=PRICE_ASC"
+RAIFFEISEN_PROBE_URL = (
+    f"{RAIFFEISEN_BASE_URL}/en/properties?sales_type=buy&category%5B%5D=house&sort=price_asc"
+)
+OHNE_MAKLER_PROBE_URL = "https://www.ohne-makler.at/immobilien/haus-kaufen/"
+IMMOBILIEN_NET_PROBE_URL = "https://www.immobilien.net/haeuser-kaufen/oesterreich?sort=PRICE_ASC"
+IMMOKRALLE_PROBE_URL = (
+    "https://www.immokralle.com/immobilien/at?q_ty=1&sort_by=ik_price_1&f[0]=ik_form:haus"
+)
+IMMI_PROBE_URL = (
+    f"{IMMI_BASE_URL}/Immobilien-Suche?type%5B%5D=h&offer%5B%5D=k&sort=preis_aufsteigend"
+)
+# Bazar keeps price.from: sorted ascending without it, the first page is all
+# 0 € "Fixpreis" ads, which would read as an unparseable price.
+BAZAR_PROBE_PARAMS = {k: v for k, v in BAZAR_PARAMS.items() if k != "price.to"}
+IMMOBILIEN_DE_PROBE_URL = (
+    "https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
+    "?search._digest=true&search._filter=ausland&search.land=at"
+    "&search.typ=kaufen&search.objektart=haus"
+)
+IMMOLIVE24_PROBE_DATA = (
+    "action=search&post_form_key=immobilien_quick&f%5BCategory_ID%5D=228&f%5Bbundesland%5D=0"
+)
+DINGDONG_PROBE_URL = (
+    f"{DINGDONG_BASE_URL}/immobilien"
+    "?field_inserent_value=All&field_kategorie_tid=5&field_miete_kauf_value=kauf"
+    "&order=field_preis&sort=asc"
+)
+PROPYLO_PROBE_URL = f"{PROPYLO_BASE_URL}/immobilien/niederosterreich?ordering=price_asc"

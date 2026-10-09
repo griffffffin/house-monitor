@@ -6,7 +6,14 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMOBILIEN_DE_BASE_URL, IMMOBILIEN_DE_URLS
+from ..config import (
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+    IMMOBILIEN_DE_BASE_URL,
+    IMMOBILIEN_DE_PROBE_URL,
+    IMMOBILIEN_DE_URLS,
+)
+from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 
@@ -141,3 +148,8 @@ class ImmobilienDeScraper:
 
         logging.info(f"Immobilien.de: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, IMMOBILIEN_DE_PROBE_URL))

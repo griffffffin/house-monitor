@@ -8,8 +8,14 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, WILLHABEN_BASE_URL, WILLHABEN_URLS
-from ..fetch import fetch_text
+from ..config import (
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+    WILLHABEN_BASE_URL,
+    WILLHABEN_PROBE_URL,
+    WILLHABEN_URLS,
+)
+from ..fetch import fetch_page, fetch_text
 from ..models import Listing, parse_de_price
 
 
@@ -77,6 +83,27 @@ class WillhabenScraper:
 
             results.append((listing_id, title, listing_url, price))
         return results
+
+    def _extract_adverts(self, html: str) -> list:
+        """The advert list from the page's __NEXT_DATA__ JSON ([] if missing)."""
+        next_data_match = re.search(
+            r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
+        )
+        adverts = []
+        if next_data_match:
+            try:
+                nd = json.loads(next_data_match.group(1))
+                adverts = (
+                    nd.get("props", {})
+                    .get("pageProps", {})
+                    .get("searchResult", {})
+                    .get("advertSummaryList", {})
+                    .get("advertSummary", [])
+                )
+                logging.info(f"Willhaben.at: __NEXT_DATA__ -> {len(adverts)} listings in the JSON.")
+            except Exception as e:
+                logging.warning(f"Willhaben.at: __NEXT_DATA__ parse error: {e}")
+        return adverts
 
     def _parse_json_adverts(self, adverts: list) -> list:
         results = []
@@ -173,25 +200,7 @@ class WillhabenScraper:
                         break
 
                     # --- Primary: extract the __NEXT_DATA__ JSON ---
-                    next_data_match = re.search(
-                        r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
-                    )
-                    adverts = []
-                    if next_data_match:
-                        try:
-                            nd = json.loads(next_data_match.group(1))
-                            adverts = (
-                                nd.get("props", {})
-                                .get("pageProps", {})
-                                .get("searchResult", {})
-                                .get("advertSummaryList", {})
-                                .get("advertSummary", [])
-                            )
-                            logging.info(
-                                f"Willhaben.at: __NEXT_DATA__ -> {len(adverts)} listings in the JSON."
-                            )
-                        except Exception as e:
-                            logging.warning(f"Willhaben.at: __NEXT_DATA__ parse error: {e}")
+                    adverts = self._extract_adverts(html)
 
                     # --- Secondary fallback: HTML DOM cards ---
                     if not adverts:
@@ -275,3 +284,13 @@ class WillhabenScraper:
 
         logging.info(f"Willhaben: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page (JSON first, HTML DOM fallback) — for the daily source health
+        check (house_monitor/health.py)."""
+        html = await fetch_page(self.session, WILLHABEN_PROBE_URL)
+        adverts = self._extract_adverts(html)
+        if adverts:
+            return self._parse_json_adverts(adverts)
+        return self._parse_html_fallback_cards(html)

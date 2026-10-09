@@ -7,7 +7,8 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMI_SEARCH_URL
+from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, IMMI_PROBE_URL, IMMI_SEARCH_URL
+from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 
@@ -131,3 +132,8 @@ class ImmiScraper:
 
         logging.info(f"Immi: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, IMMI_PROBE_URL))

@@ -11,9 +11,11 @@ from ..config import (
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
     IMMOLIVE24_BASE_URL,
+    IMMOLIVE24_PROBE_DATA,
     IMMOLIVE24_SEARCH_DATA,
     IMMOLIVE24_SEARCH_URL,
 )
+from ..fetch import HTTPStatusError
 from ..models import Listing, parse_de_price
 
 
@@ -151,3 +153,19 @@ class ImmoLive24Scraper:
 
         logging.info(f"ImmoLive24: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range (the same POST, minus
+        the kaufpreis fields), parsed like a normal page — for the daily source
+        health check (house_monitor/health.py). The POST also resets the
+        session-side filter, which the next fetch_listings() sets again anyway."""
+        async with self.session.post(
+            IMMOLIVE24_SEARCH_URL,
+            data=IMMOLIVE24_PROBE_DATA,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status != 200:
+                raise HTTPStatusError(resp.status)
+            html_text = await resp.text()
+        return self._parse_cards(html_text)

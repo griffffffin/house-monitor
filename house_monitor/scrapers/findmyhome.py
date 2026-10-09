@@ -7,7 +7,8 @@ from typing import List, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import FINDMYHOME_BASE_URL, FINDMYHOME_URL
+from ..config import FINDMYHOME_BASE_URL, FINDMYHOME_PROBE_URL, FINDMYHOME_URL
+from ..fetch import HTTPStatusError, fetch_bytes
 from ..models import Listing, parse_de_price
 
 
@@ -139,3 +140,12 @@ class FindMyHomeScraper:
 
         logging.info(f"FindMyHome: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        status, raw, _charset = await fetch_bytes(self.session, FINDMYHOME_PROBE_URL)
+        if status != 200:
+            raise HTTPStatusError(status)
+        # Same decoding as fetch_listings: FindMyHome serves ISO-8859-1.
+        return self._parse_cards(raw.decode("iso-8859-1", errors="replace"))

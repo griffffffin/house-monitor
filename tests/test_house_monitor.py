@@ -13,6 +13,7 @@ hand-built HTML/data fixtures.
 
 import asyncio
 import json
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,9 +22,10 @@ import aiohttp
 import pytest
 from bs4 import BeautifulSoup
 
+from house_monitor import health as _health
 from house_monitor import monitor as _hm_module
 from house_monitor import scrapers as _scrapers_module
-from house_monitor.fetch import fetch_bytes, fetch_text
+from house_monitor.fetch import HTTPStatusError, fetch_bytes, fetch_text
 
 
 @pytest.fixture(scope="session")
@@ -36,6 +38,7 @@ def _new_monitor(hm):
     monitor = hm.HouseMonitor.__new__(hm.HouseMonitor)
     monitor.seen = {}
     monitor.session = None
+    monitor.day_counts = {}
     return monitor
 
 
@@ -1563,6 +1566,200 @@ class TestEveryScraperFlagsIncomplete:
         scraper.incomplete = True  # left over from an earlier failed run
         assert asyncio.run(scraper.fetch_listings()) == []
         assert scraper.incomplete is False
+
+
+class _StatusSession:
+    """Every request is answered with the given (non-200) HTTP status."""
+
+    def __init__(self, status):
+        self.status = status
+
+    def get(self, url, **kwargs):
+        return _FakeResponse(status=self.status, body="")
+
+    post = get
+
+
+def _urlopen_http_503(url, *args, **kwargs):
+    raise urllib.error.HTTPError(getattr(url, "full_url", url), 503, "unavailable", None, None)
+
+
+@pytest.mark.parametrize("name", _scrapers_module.__all__)
+class TestEveryScraperProbe:
+    """probe() feeds the health check: it must parse with the scraper's own
+    code and let every failure through (an error must never look like an
+    empty page)."""
+
+    def test_empty_page_parses_to_no_cards(self, hm, name, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeUrlopenResponse())
+        scraper = getattr(hm, name)(session=_EmptyPageSession())
+        assert asyncio.run(scraper.probe()) == []
+
+    def test_timeout_propagates(self, hm, name, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen_timeout)
+        scraper = getattr(hm, name)(session=_TimeoutSession())
+        with pytest.raises(TimeoutError):
+            asyncio.run(scraper.probe())
+
+    def test_non_200_propagates(self, hm, name, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen_http_503)
+        scraper = getattr(hm, name)(session=_StatusSession(503))
+        with pytest.raises((HTTPStatusError, urllib.error.HTTPError)):
+            asyncio.run(scraper.probe())
+
+
+# ---------------------------------------------------------------------------
+# Daily source health check (house_monitor/health.py)
+# ---------------------------------------------------------------------------
+
+
+class _ProbeScraper:
+    """A stand-in source: probe() returns `cards`, or raises `error` for the
+    first `failures` calls."""
+
+    def __init__(self, cards=(), error=None, failures=0):
+        self.cards = list(cards)
+        self.error = error
+        self.failures = failures
+        self.probes = 0
+
+    async def probe(self):
+        self.probes += 1
+        if self.error is not None and self.probes <= self.failures:
+            raise self.error
+        return self.cards
+
+
+_PRICED = [("x_1", "Haus", "http://example.test/1", 250000.0)]
+_UNPRICED = [("x_1", "Haus", "http://example.test/1", 0.0)]
+
+
+@pytest.fixture
+def no_probe_delay(monkeypatch):
+    monkeypatch.setattr(_health, "HEALTH_PROBE_RETRY_DELAY", 0)
+
+
+class TestHealthDiagnose:
+    def test_source_with_results_is_healthy_without_probing(self):
+        scraper = _ProbeScraper()
+        assert asyncio.run(_health.diagnose(scraper, 5, fetch_failed=False)) is None
+        assert scraper.probes == 0
+
+    def test_failed_fetch_with_zero_results_is_broken_without_probing(self):
+        scraper = _ProbeScraper(cards=_PRICED)
+        reason = asyncio.run(_health.diagnose(scraper, 0, fetch_failed=True))
+        assert "hibával" in reason
+        assert scraper.probes == 0
+
+    def test_nothing_in_price_range_but_site_works_is_healthy(self):
+        # The OhneMakler/Immobilien.de case: 0 in 3000-70000, but the
+        # unfiltered page has priced listings.
+        assert asyncio.run(_health.diagnose(_ProbeScraper(cards=_PRICED), 0, False)) is None
+
+    def test_no_cards_on_the_unfiltered_page_is_broken(self):
+        reason = asyncio.run(_health.diagnose(_ProbeScraper(cards=[]), 0, False))
+        assert "sem talált" in reason
+
+    def test_cards_without_any_price_is_broken(self):
+        # The ImmoScout24 case: cards are found, but no price can be read.
+        reason = asyncio.run(_health.diagnose(_ProbeScraper(cards=_UNPRICED * 3), 0, False))
+        assert "3 hirdetés" in reason and "árat" in reason
+
+    def test_probe_error_is_retried_then_reported_with_its_type(self, no_probe_delay):
+        scraper = _ProbeScraper(error=asyncio.TimeoutError(), failures=99)
+        reason = asyncio.run(_health.diagnose(scraper, 0, False))
+        assert scraper.probes == _health.HEALTH_PROBE_ATTEMPTS
+        # str(TimeoutError()) is '' - the type name must still show up.
+        assert "TimeoutError" in reason
+
+    def test_one_off_probe_error_recovers_on_retry(self, no_probe_delay):
+        scraper = _ProbeScraper(cards=_PRICED, error=ConnectionResetError(), failures=1)
+        assert asyncio.run(_health.diagnose(scraper, 0, False)) is None
+        assert scraper.probes == 2
+
+
+def test_next_failure_counts_increments_broken_and_resets_recovered():
+    previous = {"A": 1, "B": 3}
+    assert _health.next_failure_counts(previous, ["A", "C"]) == {"A": 2, "C": 1}
+
+
+def test_format_error_keeps_the_type_of_an_empty_message():
+    assert _health.format_error(asyncio.TimeoutError()) == "TimeoutError"
+    assert _health.format_error(ValueError("bad")) == "ValueError: bad"
+
+
+class TestCheckSourceHealth:
+    @staticmethod
+    def _run(hm, monitor, scrapers, still_failed=()):
+        asyncio.run(monitor._check_source_health(scrapers, list(still_failed)))
+
+    @staticmethod
+    def _next_day(state_file):
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["last_check_date"] = "2000-01-01"
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_alerts_from_the_second_day_and_every_day_after(self, hm, tmp_path, monkeypatch):
+        state_file = tmp_path / "health.json"
+        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        broken, fine = _ProbeScraper(cards=[]), _ProbeScraper(cards=_PRICED)
+        monitor.day_counts = {"_ProbeScraper": 0}
+
+        self._run(hm, monitor, [broken, fine])  # day 1: counted, not alerted
+        assert monitor.notifier.sent == []
+        assert json.loads(state_file.read_text())["consecutive_failures"] == {"_ProbeScraper": 1}
+
+        self._run(hm, monitor, [broken, fine])  # same day again: skipped
+        assert json.loads(state_file.read_text())["consecutive_failures"] == {"_ProbeScraper": 1}
+
+        self._next_day(state_file)
+        self._run(hm, monitor, [broken])  # day 2: alert
+        assert len(monitor.notifier.sent) == 1
+        subject, body = monitor.notifier.sent[0]
+        assert "1 forrás" in subject
+        assert "_ProbeScraper (2. napja)" in body
+
+        self._next_day(state_file)
+        self._run(hm, monitor, [broken])  # day 3: alerted again
+        assert len(monitor.notifier.sent) == 2
+        assert "(3. napja)" in monitor.notifier.sent[1][1]
+
+    def test_recovery_resets_the_streak(self, hm, tmp_path, monkeypatch):
+        state_file = tmp_path / "health.json"
+        state_file.write_text(
+            json.dumps({"last_check_date": "2000-01-01", "consecutive_failures": {"Willhaben": 4}})
+        )
+        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        scraper = hm.WillhabenScraper(session=None)
+        monitor.day_counts = {"WillhabenScraper": 12}
+
+        self._run(hm, monitor, [scraper])
+        assert monitor.notifier.sent == []
+        assert json.loads(state_file.read_text())["consecutive_failures"] == {}
+
+    def test_failed_fetches_use_the_display_name(self, hm, tmp_path, monkeypatch):
+        state_file = tmp_path / "health.json"
+        state_file.write_text(
+            json.dumps({"last_check_date": "2000-01-01", "consecutive_failures": {"Propylo": 1}})
+        )
+        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        scraper = hm.PropyloScraper(session=None)
+
+        self._run(hm, monitor, [scraper], still_failed=[scraper])
+        assert "Propylo (2. napja)" in monitor.notifier.sent[0][1]
+
+    def test_a_crash_inside_the_check_never_propagates(self, hm, tmp_path, monkeypatch):
+        # An unwritable state path makes save_state raise.
+        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(tmp_path / "missing-dir" / "h.json"))
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        self._run(hm, monitor, [_ProbeScraper(cards=[])])  # must not raise
 
 
 class TestScrapeAndNotifyDbUpdate:

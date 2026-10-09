@@ -6,7 +6,8 @@ from typing import List
 
 import aiohttp
 
-from ..config import BAZAR_API_URL, BAZAR_PARAMS
+from ..config import BAZAR_API_URL, BAZAR_PARAMS, BAZAR_PROBE_PARAMS
+from ..fetch import HTTPStatusError
 from ..models import Listing
 
 
@@ -116,3 +117,12 @@ class BazarScraper:
 
         logging.info(f"Bazar: {len(results)} listings")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the API search without the price range, parsed like a
+        normal page — for the daily source health check (house_monitor/health.py)."""
+        async with self.session.get(BAZAR_API_URL, params=BAZAR_PROBE_PARAMS) as response:
+            if response.status != 200:
+                raise HTTPStatusError(response.status)
+            data = await response.json(content_type=None)
+        return self._parse_items(data)

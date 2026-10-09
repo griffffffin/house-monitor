@@ -6,7 +6,14 @@ from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ..config import DINGDONG_BASE_URL, DINGDONG_URL, EUR_PRICE_FROM, EUR_PRICE_TO
+from ..config import (
+    DINGDONG_BASE_URL,
+    DINGDONG_PROBE_URL,
+    DINGDONG_URL,
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+)
+from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 
@@ -116,3 +123,8 @@ class DingDongScraper:
 
         logging.info(f"DingDong: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_cards(await fetch_page(self.session, DINGDONG_PROBE_URL))

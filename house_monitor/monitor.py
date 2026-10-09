@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import aiofiles
@@ -20,11 +20,14 @@ from .config import (
     EMAIL_CONFIG,
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
+    HEALTH_MIN_CONSECUTIVE,
+    HEALTH_STATE_FILE,
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SKIP_NO_PERSIST,
     TITLE_SUBSTRING_MIN_LEN,
 )
+from . import health
 from .email_notifier import EmailNotifier
 from .logging_setup import NOTICE, _fmt_count, log_notice
 
@@ -119,6 +122,9 @@ class HouseMonitor:
         self.notifier = EmailNotifier(EMAIL_CONFIG)
         self.seen: Dict[str, Listing] = {}
         self.session: Optional[aiohttp.ClientSession] = None
+        # Scraper class name -> how many listings its latest fetch returned
+        # (a retry overwrites the main run's count) — for the health check.
+        self.day_counts: Dict[str, int] = {}
 
     def _setup_logging(self):
         logger = logging.getLogger()
@@ -363,7 +369,9 @@ class HouseMonitor:
                     exc_info=result,
                 )
                 failed.append(scraper)
+                self.day_counts[scraper.__class__.__name__] = 0
                 continue
+            self.day_counts[scraper.__class__.__name__] = len(result)
             if getattr(scraper, "incomplete", False):
                 # The scraper returned partial results after an in-loop
                 # error (missing pages possible): process what it did get
@@ -486,6 +494,66 @@ class HouseMonitor:
         log_notice("Run complete.")
         return failed
 
+    async def _check_source_health(self, scrapers: List[Any], still_failed: List[Any]) -> None:
+        """Once a day, after the same-day retries: flag sources that look
+        broken and email once one has been broken on HEALTH_MIN_CONSECUTIVE
+        consecutive days (see house_monitor/health.py). Never raises — a
+        failing check must not take the monitoring loop down with it."""
+        try:
+            today = date.today().isoformat()
+            state = health.load_state(HEALTH_STATE_FILE)
+            if state.get("last_check_date") == today:
+                # E.g. a second run the same day: counting it again would
+                # turn one broken day into "two consecutive" ones.
+                logging.info("Source health check already ran today, skipping.")
+                return
+
+            reasons = await asyncio.gather(
+                *(
+                    health.diagnose(
+                        scraper,
+                        self.day_counts.get(scraper.__class__.__name__, 0),
+                        scraper in still_failed,
+                    )
+                    for scraper in scrapers
+                )
+            )
+            broken = {}
+            for scraper, reason in zip(scrapers, reasons):
+                if reason:
+                    label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
+                    broken[label[0] if label else scraper.__class__.__name__] = reason
+
+            counts = health.next_failure_counts(
+                state.get("consecutive_failures", {}), sorted(broken)
+            )
+            health.save_state(
+                HEALTH_STATE_FILE, {"last_check_date": today, "consecutive_failures": counts}
+            )
+            if not broken:
+                logging.info("Source health check: all sources OK.")
+                return
+            for name in sorted(broken):
+                logging.warning(
+                    f"Source health check: {name} looks broken "
+                    f"(day {counts[name]}): {broken[name]}"
+                )
+
+            alerts = [
+                (name, counts[name], broken[name])
+                for name in sorted(broken)
+                if counts[name] >= HEALTH_MIN_CONSECUTIVE
+            ]
+            if not alerts:
+                return
+            subject, body = health.build_alert(alerts)
+            if await self.notifier.send(subject, body):
+                log_notice(f"Health alert sent: {', '.join(name for name, _, _ in alerts)}.")
+            else:
+                logging.error("Health alert email failed!")
+        except Exception as e:
+            logging.error(f"Source health check failed: {e}", exc_info=True)
+
     async def run(self):
         log_notice("Monitor has started.")
 
@@ -564,6 +632,8 @@ class HouseMonitor:
                         f"Still incomplete after retries: {names} — "
                         "giving up until the next scheduled run."
                     )
+
+                await self._check_source_health(scrapers, failed)
 
         except asyncio.CancelledError:
             log_notice("Monitor cancelled.")

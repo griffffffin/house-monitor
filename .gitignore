@@ -14,6 +14,7 @@ venv/
 
 # Runtime data / logs — personal/machine-specific, doesn't belong in the repo
 seen-houses.json
+health-check-state.json
 *.log
 
 # Private personal documents kept next to the code (spreadsheets and their

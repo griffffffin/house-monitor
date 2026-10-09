@@ -8,7 +8,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from ..config import EUR_PRICE_FROM, EUR_PRICE_TO, GOLDGRUBE_BASE_URL, GOLDGRUBE_URLS
-from ..fetch import fetch_bytes
+from ..fetch import HTTPStatusError, fetch_bytes
 from ..models import Listing, decode_utf8_or_latin1, parse_de_price
 
 
@@ -141,3 +141,11 @@ class GoldgrubeScraper:
 
         logging.info(f"Goldgrube: {len(results)} ads")
         return results
+
+    async def probe(self) -> list:
+        """Page 1 of the search without the price range, parsed like a normal
+        page — for the daily source health check (house_monitor/health.py)."""
+        status, raw, charset = await fetch_bytes(self.session, GOLDGRUBE_URLS[0])
+        if status != 200:
+            raise HTTPStatusError(status)
+        return self._parse_cards(decode_utf8_or_latin1(raw, charset))
