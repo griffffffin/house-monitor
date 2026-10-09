@@ -12,17 +12,31 @@ same-day retries) is checked further. It counts as broken today if
     range, parsed by the scraper's own code) still fails after retries, or
   - the probe page has no card with a readable price: 0 cards means the card
     selector broke, cards without any price mean the price selector broke.
-Once a source has been broken on HEALTH_MIN_CONSECUTIVE consecutive daily
-checks, an alert email goes out — every day while it stays broken.
+The same end-of-day check also counts the monitor's own errors of the day
+(email not sent, DB not saved, the daily run or this check crashing). Every
+finding keeps a streak of consecutive days; once a streak reaches
+HEALTH_MIN_CONSECUTIVE days it goes into the "HIBÁK" section of the next
+16:00 email (subject flagged with "hiba"), every day while it lasts. The
+monitor not having run at all for that many days is reported the same way
+when it starts again.
 """
 
 import asyncio
 import json
 import logging
 import os
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from .config import HEALTH_PROBE_ATTEMPTS, HEALTH_PROBE_RETRY_DELAY
+from .config import HEALTH_MIN_CONSECUTIVE, HEALTH_PROBE_ATTEMPTS, HEALTH_PROBE_RETRY_DELAY
+
+# Email labels of the monitor's own error kinds (streak keys "internal:<kind>").
+INTERNAL_ERROR_LABELS = {
+    "email_send": "Email-küldés",
+    "db_save": "Adatbázis-mentés",
+    "run_crash": "Napi futás",
+    "health_check": "Napi hibaellenőrzés",
+}
 
 
 def format_error(e: BaseException) -> str:
@@ -75,10 +89,44 @@ async def diagnose(scraper: Any, day_count: int, fetch_failed: bool) -> Optional
     return None
 
 
-def next_failure_counts(previous: Dict[str, int], broken: List[str]) -> Dict[str, int]:
-    """Consecutive broken-day counters after today's check: today's broken
-    sources go up by one, every other source drops out (= back to 0)."""
-    return {name: previous.get(name, 0) + 1 for name in broken}
+def update_streaks(
+    previous: Dict[str, Any], findings: Dict[str, str], today: str
+) -> Dict[str, Any]:
+    """Consecutive-day streaks after today's check. `findings` maps a key
+    ("source:<name>" or "internal:<kind>") to today's reason. A key found
+    today continues its streak if it was last found yesterday, otherwise
+    starts at 1; keys not found today drop out (= back to 0)."""
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    streaks = {}
+    for key, reason in findings.items():
+        prev = previous.get(key) or {}
+        days = prev.get("days", 0) + 1 if prev.get("last") == yesterday else 1
+        streaks[key] = {"days": days, "last": today, "reason": reason}
+    return streaks
+
+
+def due_alerts(streaks: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The streaks long enough to report, as email alert entries."""
+    alerts = []
+    for key, streak in sorted(streaks.items()):
+        if streak["days"] < HEALTH_MIN_CONSECUTIVE:
+            continue
+        kind, _, name = key.partition(":")
+        label = INTERNAL_ERROR_LABELS.get(name, name) if kind == "internal" else name
+        alerts.append({"label": label, "days": streak["days"], "reason": streak["reason"]})
+    return alerts
+
+
+def missed_days(last_run: Optional[str], today: str) -> List[str]:
+    """The dates strictly between the last daily run and today."""
+    if not last_run:
+        return []
+    day, end = date.fromisoformat(last_run) + timedelta(days=1), date.fromisoformat(today)
+    missed = []
+    while day < end:
+        missed.append(day.isoformat())
+        day += timedelta(days=1)
+    return missed
 
 
 def load_state(path: str) -> Dict[str, Any]:
@@ -103,18 +151,27 @@ def save_state(path: str, state: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def build_alert(alerts: List[Tuple[str, int, str]]) -> Tuple[str, str]:
-    """(subject, body) of the alert email for (source, broken days, reason)
-    entries. In Hungarian, like the listing emails."""
-    subject = f"Ingatlanok: {len(alerts)} forrás lehet, hogy elromlott"
+def email_subject(listings: int, alerts: int) -> str:
+    """The 16:00 email's subject — it names "hiba" whenever errors are in it."""
+    if not alerts:
+        return f"Ingatlanok: {listings} db"
+    if not listings:
+        return f"Ingatlanok: {alerts} hiba"
+    return f"Ingatlanok: {listings} db + {alerts} hiba"
+
+
+def build_alert_section(alerts: List[Dict[str, Any]]) -> str:
+    """The email's "HIBÁK" section (empty without alerts). In Hungarian, like
+    the listing emails."""
+    if not alerts:
+        return ""
     lines = [
-        "Ezek a források egymást követő napokon 0 találatot hoztak, és nem azért, "
-        "mert nincs hirdetés az ársávban — lehet, hogy elromlottak:\n\n"
+        "=" * 148 + "\n",
+        f"HIBÁK — legalább {HEALTH_MIN_CONSECUTIVE} napja fennállnak; amíg így marad, "
+        "minden nap jelezzük:\n\n",
     ]
-    for name, days, reason in alerts:
-        lines.append(f"- {name} ({days}. napja): {reason}\n")
-    lines.append(
-        "\nAmíg így marad, minden nap jön erről egy levél. "
-        "Részletek: /var/log/house-monitor/service.log\n"
-    )
-    return subject, "".join(lines)
+    for alert in alerts:
+        days = f" ({alert['days']}. napja)" if alert.get("days") else ""
+        lines.append(f"- {alert['label']}{days}: {alert['reason']}\n")
+    lines.append("\nRészletek: /var/log/house-monitor/service.log\n")
+    return "".join(lines)

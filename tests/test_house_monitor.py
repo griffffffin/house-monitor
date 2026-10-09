@@ -40,6 +40,8 @@ def _new_monitor(hm):
     monitor.seen = {}
     monitor.session = None
     monitor.day_counts = {}
+    monitor.today_errors = {}
+    monitor.last_email_ok = True
     return monitor
 
 
@@ -621,6 +623,8 @@ class TestSaveDbAtomic:
 
         # The existing file's contents stay intact — not truncated or emptied.
         assert data_file.read_text(encoding="utf-8") == '{"old": "data"}'
+        # ... and the failure is counted as an error of the day.
+        assert "simulated error during save" in monitor.today_errors["db_save"]
 
 
 # ---------------------------------------------------------------------------
@@ -1867,88 +1871,201 @@ class TestHealthDiagnose:
         assert scraper.probes == 2
 
 
-def test_next_failure_counts_increments_broken_and_resets_recovered():
-    previous = {"A": 1, "B": 3}
-    assert _health.next_failure_counts(previous, ["A", "C"]) == {"A": 2, "C": 1}
-
-
 def test_format_error_keeps_the_type_of_an_empty_message():
     assert _health.format_error(asyncio.TimeoutError()) == "TimeoutError"
     assert _health.format_error(ValueError("bad")) == "ValueError: bad"
 
 
-class TestCheckSourceHealth:
-    @staticmethod
-    def _run(hm, monitor, scrapers, still_failed=()):
-        asyncio.run(monitor._check_source_health(scrapers, list(still_failed)))
+class TestStreaksAndAlertText:
+    def test_update_streaks_counts_consecutive_days(self):
+        previous = {
+            "source:A": {"days": 1, "last": "2026-10-09", "reason": "old"},
+            "source:B": {"days": 3, "last": "2026-10-09", "reason": "gone today"},
+            "source:C": {"days": 5, "last": "2026-10-07", "reason": "a day was skipped"},
+        }
+        findings = {"source:A": "r", "source:C": "again", "internal:db_save": "x"}
+        streaks = _health.update_streaks(previous, findings, "2026-10-10")
+        assert {key: s["days"] for key, s in streaks.items()} == {
+            "source:A": 2,  # yesterday too -> continues
+            "source:C": 1,  # not yesterday -> starts over
+            "internal:db_save": 1,
+        }  # B wasn't found today -> dropped
+        assert streaks["source:A"] == {"days": 2, "last": "2026-10-10", "reason": "r"}
 
-    @staticmethod
-    def _next_day(state_file):
-        state = json.loads(state_file.read_text(encoding="utf-8"))
-        state["last_check_date"] = "2000-01-01"
-        state_file.write_text(json.dumps(state), encoding="utf-8")
+    def test_due_alerts_need_two_days_and_get_readable_labels(self):
+        streaks = {
+            "source:ImmoScout24": {"days": 2, "last": "d", "reason": "r1"},
+            "source:Propylo": {"days": 1, "last": "d", "reason": "r2"},
+            "internal:email_send": {"days": 3, "last": "d", "reason": "r3"},
+        }
+        assert _health.due_alerts(streaks) == [
+            {"label": "Email-küldés", "days": 3, "reason": "r3"},
+            {"label": "ImmoScout24", "days": 2, "reason": "r1"},
+        ]
 
-    def test_alerts_from_the_second_day_and_every_day_after(self, hm, tmp_path, monkeypatch):
-        state_file = tmp_path / "health.json"
-        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
+    def test_missed_days(self):
+        assert _health.missed_days("2026-10-07", "2026-10-10") == ["2026-10-08", "2026-10-09"]
+        assert _health.missed_days("2026-10-09", "2026-10-10") == []
+        assert _health.missed_days(None, "2026-10-10") == []
+
+    def test_subject_names_the_errors(self):
+        assert _health.email_subject(5, 0) == "Ingatlanok: 5 db"
+        assert _health.email_subject(5, 2) == "Ingatlanok: 5 db + 2 hiba"
+        assert _health.email_subject(0, 1) == "Ingatlanok: 1 hiba"
+
+    def test_alert_section(self):
+        assert _health.build_alert_section([]) == ""
+        text = _health.build_alert_section(
+            [
+                {"label": "ImmoScout24", "days": 2, "reason": "nincs ár"},
+                {"label": "Kimaradt futás", "days": None, "reason": "nem futott"},
+            ]
+        )
+        assert "HIBÁK" in text
+        assert "- ImmoScout24 (2. napja): nincs ár\n" in text
+        assert "- Kimaradt futás: nem futott\n" in text
+
+
+def _yesterday():
+    return (datetime.now().date() - timedelta(days=1)).isoformat()
+
+
+def _today():
+    return datetime.now().date().isoformat()
+
+
+@pytest.fixture
+def state_file(hm, tmp_path, monkeypatch):
+    path = tmp_path / "health.json"
+    monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(path))
+    monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
+    return path
+
+
+def _read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class _ResultNotifier(_StubNotifier):
+    def __init__(self, result=True):
+        super().__init__()
+        self.result = result
+
+    async def send(self, subject, body):
+        self.sent.append((subject, body))
+        return self.result
+
+
+class TestEndOfDayCheck:
+    def test_a_source_broken_on_two_days_becomes_a_pending_alert(self, hm, state_file):
         monitor = _new_monitor(hm)
-        monitor.notifier = _StubNotifier()
-        broken, fine = _ProbeScraper(cards=[]), _ProbeScraper(cards=_PRICED)
+        broken = _ProbeScraper(cards=[])  # 0 today, and the unfiltered page is empty
         monitor.day_counts = {"_ProbeScraper": 0}
 
-        self._run(hm, monitor, [broken, fine])  # day 1: counted, not alerted
-        assert monitor.notifier.sent == []
-        assert json.loads(state_file.read_text())["consecutive_failures"] == {"_ProbeScraper": 1}
+        asyncio.run(monitor._end_of_day_check([broken], []))  # day 1
+        assert _read(state_file)["pending_alerts"] == []
 
-        self._run(hm, monitor, [broken, fine])  # same day again: skipped
-        assert json.loads(state_file.read_text())["consecutive_failures"] == {"_ProbeScraper": 1}
+        state = _read(state_file)
+        state["last_check_date"] = _yesterday()
+        state["streaks"]["source:_ProbeScraper"]["last"] = _yesterday()
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+        asyncio.run(monitor._end_of_day_check([broken], []))  # day 2
+        alerts = _read(state_file)["pending_alerts"]
+        assert [(a["label"], a["days"]) for a in alerts] == [("_ProbeScraper", 2)]
 
-        self._next_day(state_file)
-        self._run(hm, monitor, [broken])  # day 2: alert
-        assert len(monitor.notifier.sent) == 1
-        subject, body = monitor.notifier.sent[0]
-        assert "1 forrás" in subject
-        assert "_ProbeScraper (2. napja)" in body
-
-        self._next_day(state_file)
-        self._run(hm, monitor, [broken])  # day 3: alerted again
-        assert len(monitor.notifier.sent) == 2
-        assert "(3. napja)" in monitor.notifier.sent[1][1]
-
-    def test_recovery_resets_the_streak(self, hm, tmp_path, monkeypatch):
-        state_file = tmp_path / "health.json"
-        state_file.write_text(
-            json.dumps({"last_check_date": "2000-01-01", "consecutive_failures": {"Willhaben": 4}})
-        )
-        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
+    def test_a_second_check_on_the_same_day_counts_nothing(self, hm, state_file):
         monitor = _new_monitor(hm)
-        monitor.notifier = _StubNotifier()
-        scraper = hm.WillhabenScraper(session=None)
-        monitor.day_counts = {"WillhabenScraper": 12}
+        monitor.day_counts = {"_ProbeScraper": 0}
+        asyncio.run(monitor._end_of_day_check([_ProbeScraper(cards=[])], []))
+        asyncio.run(monitor._end_of_day_check([_ProbeScraper(cards=[])], []))
+        assert _read(state_file)["streaks"]["source:_ProbeScraper"]["days"] == 1
 
-        self._run(hm, monitor, [scraper])
-        assert monitor.notifier.sent == []
-        assert json.loads(state_file.read_text())["consecutive_failures"] == {}
-
-    def test_failed_fetches_use_the_display_name(self, hm, tmp_path, monkeypatch):
-        state_file = tmp_path / "health.json"
+    def test_own_errors_of_two_days_become_a_pending_alert(self, hm, state_file):
         state_file.write_text(
-            json.dumps({"last_check_date": "2000-01-01", "consecutive_failures": {"Propylo": 1}})
+            json.dumps(
+                {
+                    "last_check_date": _yesterday(),
+                    "streaks": {
+                        "internal:email_send": {"days": 1, "last": _yesterday(), "reason": "x"}
+                    },
+                }
+            ),
+            encoding="utf-8",
         )
-        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(state_file))
         monitor = _new_monitor(hm)
-        monitor.notifier = _StubNotifier()
-        scraper = hm.PropyloScraper(session=None)
-
-        self._run(hm, monitor, [scraper], still_failed=[scraper])
-        assert "Propylo (2. napja)" in monitor.notifier.sent[0][1]
+        monitor.today_errors = {"email_send": "nem sikerült elküldeni"}
+        asyncio.run(monitor._end_of_day_check([], [], check_sources=False))
+        assert _read(state_file)["pending_alerts"] == [
+            {"label": "Email-küldés", "days": 2, "reason": "nem sikerült elküldeni"}
+        ]
+        assert monitor.today_errors == {}  # counted, so cleared
 
     def test_a_crash_inside_the_check_never_propagates(self, hm, tmp_path, monkeypatch):
         # An unwritable state path makes save_state raise.
         monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(tmp_path / "missing-dir" / "h.json"))
         monitor = _new_monitor(hm)
-        monitor.notifier = _StubNotifier()
-        self._run(hm, monitor, [_ProbeScraper(cards=[])])  # must not raise
+        asyncio.run(monitor._end_of_day_check([_ProbeScraper(cards=[])], []))  # must not raise
+        assert "health_check" in monitor.today_errors
+
+
+class TestErrorsInTheDailyEmail:
+    ALERT = {"label": "ImmoScout24", "days": 2, "reason": "nincs ár"}
+
+    def test_errors_alone_still_send_an_email_flagged_hiba(self, hm, state_file):
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier()
+        asyncio.run(monitor._scrape_and_notify([_OkScraper([])], alerts=[self.ALERT]))
+        subject, body = monitor.notifier.sent[0]
+        assert subject == "Ingatlanok: 1 hiba"
+        assert "ImmoScout24 (2. napja): nincs ár" in body
+
+    def test_listings_and_errors_share_one_email(self, hm, state_file):
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier()
+        listing = TestScrapeAndNotifyRetryCollection._listing(hm, "fh_1", "Haus", 30000.0)
+        asyncio.run(monitor._scrape_and_notify([_OkScraper([listing])], alerts=[self.ALERT]))
+        subject, body = monitor.notifier.sent[0]
+        assert subject == "Ingatlanok: 1 db + 1 hiba"
+        assert body.index("Haus") < body.index("HIBÁK")
+
+    def test_a_failed_send_is_an_error_of_the_day(self, hm, state_file):
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier(result=False)
+        listing = TestScrapeAndNotifyRetryCollection._listing(hm, "fh_1", "Haus", 30000.0)
+        asyncio.run(monitor._scrape_and_notify([_OkScraper([listing])]))
+        assert monitor.last_email_ok is False
+        assert "email_send" in monitor.today_errors
+        assert "fh_1" not in monitor.seen  # not persisted: re-sent on the next run
+
+    def test_daily_run_reports_pending_alerts_once_sent(self, hm, state_file):
+        state_file.write_text(json.dumps({"pending_alerts": [self.ALERT]}), encoding="utf-8")
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier()
+        asyncio.run(monitor._daily_run([_OkScraper([])]))
+        assert monitor.notifier.sent[0][0] == "Ingatlanok: 1 hiba"
+        state = _read(state_file)
+        assert state["pending_alerts"] == []
+        assert state["last_run_date"] == _today()
+
+    def test_pending_alerts_survive_a_failed_send(self, hm, state_file):
+        state_file.write_text(json.dumps({"pending_alerts": [self.ALERT]}), encoding="utf-8")
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier(result=False)
+        asyncio.run(monitor._daily_run([_OkScraper([])]))
+        assert _read(state_file)["pending_alerts"] == [self.ALERT]
+
+    def test_two_or_more_missed_days_are_reported(self, hm, state_file):
+        three_days_ago = (datetime.now().date() - timedelta(days=3)).isoformat()
+        state_file.write_text(json.dumps({"last_run_date": three_days_ago}), encoding="utf-8")
+        monitor = _new_monitor(hm)
+        alerts = monitor._start_of_day()
+        assert [a["label"] for a in alerts] == ["Kimaradt futás"]
+        assert "2 napig nem futott" in alerts[0]["reason"]
+
+    def test_a_single_missed_day_is_not_reported(self, hm, state_file):
+        two_days_ago = (datetime.now().date() - timedelta(days=2)).isoformat()
+        state_file.write_text(json.dumps({"last_run_date": two_days_ago}), encoding="utf-8")
+        assert _new_monitor(hm)._start_of_day() == []
 
 
 # ---------------------------------------------------------------------------

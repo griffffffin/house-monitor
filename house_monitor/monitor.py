@@ -128,6 +128,11 @@ class HouseMonitor:
         # Scraper class name -> how many listings its latest fetch returned
         # (a retry overwrites the main run's count) — for the health check.
         self.day_counts: Dict[str, int] = {}
+        # The monitor's own errors today (kind -> detail), counted by the
+        # end-of-day check into multi-day streaks (see health.py).
+        self.today_errors: Dict[str, str] = {}
+        # Whether the last _scrape_and_notify() email went out.
+        self.last_email_ok = True
 
     def _setup_logging(self):
         logger = logging.getLogger()
@@ -207,6 +212,9 @@ class HouseMonitor:
             os.replace(tmp_file, DATA_FILE)
         except Exception as e:
             logging.error(f"Error saving database: {e}")
+            self.today_errors["db_save"] = (
+                f"nem sikerült menteni a {DATA_FILE} fájlt ({health.format_error(e)})"
+            )
 
     def _seconds_until_1600(self) -> float:
         now = datetime.now()
@@ -359,10 +367,14 @@ class HouseMonitor:
             parts.append("-" * 148 + "\n\n")
         return "".join(parts)
 
-    async def _scrape_and_notify(self, scrapers: List[Any]) -> List[Any]:
+    async def _scrape_and_notify(
+        self, scrapers: List[Any], alerts: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Any]:
         """One full fetch -> filter -> notify -> persist cycle over the given
-        scrapers. Returns the scrapers whose fetch failed or was cut short
-        (unhandled exception from the gather, or the scraper set its
+        scrapers. `alerts` (the day's due error alerts, see health.py) go into
+        the same email, after the listings — an email goes out for them even
+        with no new listing. Returns the scrapers whose fetch failed or was
+        cut short (unhandled exception from the gather, or the scraper set its
         `incomplete` flag after an in-loop error), so the caller can re-run
         just those later the same day."""
         db_changed = False
@@ -513,12 +525,26 @@ class HouseMonitor:
                 else:
                     to_notify.append(listing)
 
-        if to_notify:
-            log_notice(f"Found {len(to_notify)} new/changed listings. Sending email...")
-            subject = f"Ingatlanok: {len(to_notify)} db"
-            body = self._build_email_body(to_notify)
+        alerts = alerts or []
+        success = True
+        if to_notify or alerts:
+            log_notice(
+                f"Found {len(to_notify)} new/changed listings and {len(alerts)} error alerts. "
+                "Sending email..."
+            )
+            subject = health.email_subject(len(to_notify), len(alerts))
+            body = (self._build_email_body(to_notify) if to_notify else "") + (
+                health.build_alert_section(alerts)
+            )
             success = await self.notifier.send(subject, body)
+            if not success:
+                logging.error("Email failed! Will retry on the next run.")
+                self.today_errors["email_send"] = (
+                    "nem sikerült elküldeni az emailt (SMTP-hiba, részletek a naplóban)"
+                )
+        self.last_email_ok = success
 
+        if to_notify:
             if success:
                 log_notice("Email sent. Updating database.")
                 now_ts = datetime.now().isoformat()
@@ -529,8 +555,6 @@ class HouseMonitor:
                         listing.first_seen = self.seen[listing.id].first_seen
                     self.seen[listing.id] = listing
                 db_changed = True
-            else:
-                logging.error("Email failed! Will retry on the next run.")
         else:
             log_notice("No new findings.")
             # No new listings but still update last_seen for all fetched ones
@@ -546,65 +570,132 @@ class HouseMonitor:
         log_notice("Run complete.")
         return failed
 
-    async def _check_source_health(self, scrapers: List[Any], still_failed: List[Any]) -> None:
-        """Once a day, after the same-day retries: flag sources that look
-        broken and email once one has been broken on HEALTH_MIN_CONSECUTIVE
-        consecutive days (see house_monitor/health.py). Never raises — a
-        failing check must not take the monitoring loop down with it."""
+    def _start_of_day(self) -> List[Dict[str, Any]]:
+        """Record today's run and return the error alerts due in today's 16:00
+        email: what the last end-of-day check left pending, plus a missed-run
+        notice once the monitor hadn't run for HEALTH_MIN_CONSECUTIVE+ days."""
+        try:
+            today = date.today().isoformat()
+            state = health.load_state(HEALTH_STATE_FILE)
+            missed = health.missed_days(state.get("last_run_date"), today)
+            if len(missed) >= HEALTH_MIN_CONSECUTIVE:
+                logging.warning(f"The monitor didn't run on {len(missed)} day(s): {missed}")
+                state["missed_runs"] = {
+                    "label": "Kimaradt futás",
+                    "days": None,
+                    "reason": f"a monitor {len(missed)} napig nem futott "
+                    f"({missed[0]} – {missed[-1]}), pl. a Pi újraindult vagy állt a szolgáltatás",
+                }
+            state["last_run_date"] = today
+            health.save_state(HEALTH_STATE_FILE, state)
+            alerts = list(state.get("pending_alerts") or [])
+            if state.get("missed_runs"):
+                alerts.append(state["missed_runs"])
+            return alerts
+        except Exception as e:
+            logging.error(f"Start-of-day check failed: {e}", exc_info=True)
+            self.today_errors["health_check"] = (
+                f"a napi hibaellenőrzés hibával leállt ({health.format_error(e)})"
+            )
+            return []
+
+    def _clear_reported_alerts(self) -> None:
+        """The alerts made it into an email: don't carry them over."""
+        try:
+            state = health.load_state(HEALTH_STATE_FILE)
+            state["pending_alerts"] = []
+            state.pop("missed_runs", None)
+            health.save_state(HEALTH_STATE_FILE, state)
+        except Exception as e:
+            logging.error(f"Could not clear the reported alerts: {e}", exc_info=True)
+
+    async def _end_of_day_check(
+        self, scrapers: List[Any], still_failed: List[Any], check_sources: bool = True
+    ) -> None:
+        """Once a day, after the same-day retries: diagnose the sources (see
+        health.py) and count them, together with today's own errors, into
+        multi-day streaks; the streaks of HEALTH_MIN_CONSECUTIVE+ days become
+        the alerts of the next 16:00 email. Never raises — a failing check
+        must not take the monitoring loop down with it."""
         try:
             today = date.today().isoformat()
             state = health.load_state(HEALTH_STATE_FILE)
             if state.get("last_check_date") == today:
                 # E.g. a second run the same day: counting it again would
-                # turn one broken day into "two consecutive" ones.
-                logging.info("Source health check already ran today, skipping.")
+                # turn one bad day into "two consecutive" ones.
+                logging.info("End-of-day check already ran today, skipping.")
                 return
 
-            reasons = await asyncio.gather(
-                *(
-                    health.diagnose(
-                        scraper,
-                        self.day_counts.get(scraper.__class__.__name__, 0),
-                        scraper in still_failed,
+            findings: Dict[str, str] = {}
+            if check_sources:
+                reasons = await asyncio.gather(
+                    *(
+                        health.diagnose(
+                            scraper,
+                            self.day_counts.get(scraper.__class__.__name__, 0),
+                            scraper in still_failed,
+                        )
+                        for scraper in scrapers
                     )
-                    for scraper in scrapers
                 )
-            )
-            broken = {}
-            for scraper, reason in zip(scrapers, reasons):
-                if reason:
-                    label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
-                    broken[label[0] if label else scraper.__class__.__name__] = reason
+                for scraper, reason in zip(scrapers, reasons):
+                    if reason:
+                        label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
+                        name = label[0] if label else scraper.__class__.__name__
+                        findings[f"source:{name}"] = reason
+            for kind, detail in self.today_errors.items():
+                findings[f"internal:{kind}"] = detail
 
-            counts = health.next_failure_counts(
-                state.get("consecutive_failures", {}), sorted(broken)
-            )
-            health.save_state(
-                HEALTH_STATE_FILE, {"last_check_date": today, "consecutive_failures": counts}
-            )
-            if not broken:
-                logging.info("Source health check: all sources OK.")
-                return
-            for name in sorted(broken):
+            streaks = health.update_streaks(state.get("streaks") or {}, findings, today)
+            state["last_check_date"] = today
+            state["streaks"] = streaks
+            state["pending_alerts"] = health.due_alerts(streaks)
+            health.save_state(HEALTH_STATE_FILE, state)
+            self.today_errors = {}
+
+            for key, streak in sorted(streaks.items()):
                 logging.warning(
-                    f"Source health check: {name} looks broken "
-                    f"(day {counts[name]}): {broken[name]}"
+                    f"End-of-day check: {key} (day {streak['days']}): {streak['reason']}"
                 )
-
-            alerts = [
-                (name, counts[name], broken[name])
-                for name in sorted(broken)
-                if counts[name] >= HEALTH_MIN_CONSECUTIVE
-            ]
-            if not alerts:
-                return
-            subject, body = health.build_alert(alerts)
-            if await self.notifier.send(subject, body):
-                log_notice(f"Health alert sent: {', '.join(name for name, _, _ in alerts)}.")
-            else:
-                logging.error("Health alert email failed!")
+            if not streaks:
+                logging.info("End-of-day check: no problems.")
         except Exception as e:
-            logging.error(f"Source health check failed: {e}", exc_info=True)
+            logging.error(f"End-of-day check failed: {e}", exc_info=True)
+            self.today_errors = {
+                "health_check": f"a napi hibaellenőrzés hibával leállt ({health.format_error(e)})"
+            }
+
+    async def _daily_run(self, scrapers: List[Any]) -> List[Any]:
+        """The 16:00 run with its same-day retries; returns the sources still
+        failing at the end."""
+        alerts = self._start_of_day()
+        log_notice("Searching...")
+        failed = await self._scrape_and_notify(scrapers, alerts=alerts)
+        if alerts and self.last_email_ok:
+            self._clear_reported_alerts()
+
+        # Same-day retry: re-run ONLY the failed sources after a wait. The
+        # main email above already went out from the healthy sources,
+        # undelayed; anything new the retried sources find goes out in a
+        # separate follow-up email. The seen-DB and the cross-platform
+        # duplicate filter guarantee nothing already notified gets emailed
+        # twice.
+        for delay in INCOMPLETE_RETRY_DELAYS:
+            if not failed:
+                break
+            names = ", ".join(s.__class__.__name__ for s in failed)
+            log_notice(
+                f"{len(failed)} incomplete source(s) ({names}), retrying in {delay // 60} min..."
+            )
+            await asyncio.sleep(delay)
+            log_notice("Retrying incomplete sources...")
+            failed = await self._scrape_and_notify(failed)
+        if failed:
+            names = ", ".join(s.__class__.__name__ for s in failed)
+            log_notice(
+                f"Still incomplete after retries: {names} — giving up until the next scheduled run."
+            )
+        return failed
 
     async def run(self):
         log_notice("Monitor has started.")
@@ -659,34 +750,19 @@ class HouseMonitor:
                 logging.info(f"Waiting {wait / 3600:.2f} hours until next run...")
                 await asyncio.sleep(wait)
 
-                log_notice("Searching...")
-                failed = await self._scrape_and_notify(scrapers)
-
-                # Same-day retry: re-run ONLY the failed sources after a
-                # wait. The main email above already went out from the
-                # healthy sources, undelayed; anything new the retried
-                # sources find goes out in a separate follow-up email. The
-                # seen-DB and the cross-platform duplicate filter guarantee
-                # nothing already notified gets emailed twice.
-                for delay in INCOMPLETE_RETRY_DELAYS:
-                    if not failed:
-                        break
-                    names = ", ".join(s.__class__.__name__ for s in failed)
-                    log_notice(
-                        f"{len(failed)} incomplete source(s) ({names}), "
-                        f"retrying in {delay // 60} min..."
+                failed: List[Any] = []
+                try:
+                    failed = await self._daily_run(scrapers)
+                    await self._end_of_day_check(scrapers, failed)
+                except Exception as e:
+                    # A crash used to end the process (systemd restarted it,
+                    # and the day was lost silently); now it's logged, counted
+                    # as an error of the day, and the loop waits for tomorrow.
+                    logging.error(f"Daily run crashed: {e}", exc_info=True)
+                    self.today_errors["run_crash"] = (
+                        f"a napi futás hibával leállt ({health.format_error(e)})"
                     )
-                    await asyncio.sleep(delay)
-                    log_notice("Retrying incomplete sources...")
-                    failed = await self._scrape_and_notify(failed)
-                if failed:
-                    names = ", ".join(s.__class__.__name__ for s in failed)
-                    log_notice(
-                        f"Still incomplete after retries: {names} — "
-                        "giving up until the next scheduled run."
-                    )
-
-                await self._check_source_health(scrapers, failed)
+                    await self._end_of_day_check(scrapers, failed, check_sources=False)
 
         except asyncio.CancelledError:
             log_notice("Monitor cancelled.")
