@@ -1498,6 +1498,12 @@ def test_price_range_is_sane(hm):
     assert 0 < hm.EUR_PRICE_FROM < hm.EUR_PRICE_TO
 
 
+def test_blacklist_catches_both_spellings_of_presshaus(hm):
+    # str.lower() keeps "ß", so "Preßhaus" needs its own entry next to "Presshaus".
+    for title in ("Traditionelles Presshaus mit Keller", "Uriges Preßhaus in der Kellergasse"):
+        assert any(word.lower() in title.lower() for word in hm.BLACKLIST), title
+
+
 def test_all_scrapers_are_constructible(hm):
     """Regression smoke test: every scraper class must be constructible with
     a session. If someone breaks an __init__, this catches it."""
