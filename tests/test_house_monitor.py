@@ -1195,23 +1195,73 @@ class TestImmodirektCardParsing:
         assert price == 185000.0
 
 
-class TestImmobilienDeCardParsing:
-    HTML = """
-    <a class="lr-card" href="/ausland/9667674">
-      <div class="lr-card__title">Ferienhaus in Kärnten</div>
-      <div class="lr-card__price-amount">208.000 €</div>
-    </a>
-    """
+class TestImmobilienDeApiParsing:
+    """The site's public REST API (POST /api/rest/estates/search)."""
+
+    DATA = {
+        "items": [
+            {
+                "legacyId": 10053073,
+                "title": "Charmantes Einfamilienhaus",
+                "purchasePrice": "16900.00",
+                "country": "at",
+            },
+            {"legacyId": 10053366, "title": "Landhaus", "purchasePrice": None, "country": "at"},
+            {
+                "legacyId": 9604844,
+                "title": "Apartment",
+                "purchasePrice": "63000.00",
+                "country": "es",
+            },
+        ],
+        "nextCursor": None,
+    }
 
     def test_extracts_id_title_url_price(self, hm):
-        scraper = hm.ImmobilienDeScraper(session=None)
-        cards = scraper._parse_cards(self.HTML)
-        assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
-        assert listing_id == "imde_9667674"
-        assert title == "Ferienhaus in Kärnten"
-        assert url == "https://www.immobilien.de/ausland/9667674"
-        assert price == 208000.0
+        cards = hm.ImmobilienDeScraper(session=None)._parse_items(self.DATA)
+        # Price on request -> 0.0 (dropped later by the price filter); the
+        # non-Austrian item is skipped.
+        assert cards == [
+            (
+                "imde_10053073",
+                "Charmantes Einfamilienhaus",
+                "https://www.immobilien.de/expose/10053073",
+                16900.0,
+            ),
+            ("imde_10053366", "Landhaus", "https://www.immobilien.de/expose/10053366", 0.0),
+        ]
+
+    def test_follows_the_cursor_and_echoes_the_csrf_cookie(self, hm):
+        class _Cookie:
+            key, value = "csrf-token", "tok123"
+
+        def _page(legacy_id, title, price, next_cursor):
+            item = {"legacyId": legacy_id, "title": title, "purchasePrice": price, "country": "at"}
+            return json.dumps({"items": [item], "nextCursor": next_cursor})
+
+        pages = {None: _page(1, "A", "20000", "c2"), "c2": _page(2, "B", "30000", None)}
+
+        class _ApiSession:
+            cookie_jar = [_Cookie()]
+
+            def __init__(self):
+                self.bodies, self.headers = [], []
+
+            def get(self, url, **kwargs):
+                return _FakeResponse(body="{}")
+
+            def post(self, url, json=None, headers=None, **kwargs):
+                self.bodies.append(dict(json))
+                self.headers.append(headers)
+                return _FakeResponse(body=pages[json.get("cursor")])
+
+        session = _ApiSession()
+        scraper = hm.ImmobilienDeScraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
+        assert [listing.id for listing in listings] == ["imde_1", "imde_2"]
+        assert [b.get("cursor") for b in session.bodies] == [None, "c2"]
+        assert all(h == {"x-csrf-token": "tok123"} for h in session.headers)
+        assert scraper.incomplete is False
 
 
 class TestFindheimCardParsing:

@@ -235,32 +235,21 @@ DERSTANDARD_URL = (
 
 # used by: ImmobilienDeScraper
 IMMOBILIEN_DE_BASE_URL = "https://www.immobilien.de"
-IMMOBILIEN_DE_URLS = [
-    (
-        f"https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
-        f"?search._digest=true&search._filter=ausland&search.land=at"
-        f"&search.typ=kaufen&search.preis_von={EUR_PRICE_FROM}&search.preis_bis={EUR_PRICE_TO}"
-        f"&search.objektart=rendite"
-    ),
-    (
-        f"https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
-        f"?search._digest=true&search._filter=ausland&search.land=at"
-        f"&search.typ=kaufen&search.preis_von={EUR_PRICE_FROM}&search.preis_bis={EUR_PRICE_TO}"
-        f"&search.objektart=gastronomie_hotel"
-    ),
-    (
-        f"https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
-        f"?search._digest=true&search._filter=ausland&search.land=at"
-        f"&search.typ=kaufen&search.preis_von={EUR_PRICE_FROM}&search.preis_bis={EUR_PRICE_TO}"
-        f"&search.objektart=freizeit"
-    ),
-    (
-        f"https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
-        f"?search._digest=true&search._filter=ausland&search.land=at"
-        f"&search.typ=kaufen&search.preis_von={EUR_PRICE_FROM}&search.preis_bis={EUR_PRICE_TO}"
-        f"&search.objektart=haus"
-    ),
-]
+# Rebuilt on Next.js in 2026; read through its documented public REST API
+# (/api/docs) — the Austria page only server-renders the 24 newest houses and
+# ignores every query parameter. POST {API}/estates/search with this filter;
+# the server applies the price range and paginates by cursor.
+IMMOBILIEN_DE_API_URL = f"{IMMOBILIEN_DE_BASE_URL}/api/rest"
+IMMOBILIEN_DE_SEARCH = {
+    "category": "ausland",
+    "objectKind": "haus",
+    "marketingType": "kauf",
+    "country": "at",
+    "priceMin": EUR_PRICE_FROM,
+    "priceMax": EUR_PRICE_TO,
+    "sort": "newest",
+    "limit": 50,
+}
 
 # used by: GoldgrubeScraper
 GOLDGRUBE_BASE_URL = "https://www.goldgrube.at"
@@ -325,11 +314,9 @@ IMMI_PROBE_URL = (
 # Bazar keeps price.from: sorted ascending without it, the first page is all
 # 0 € "Fixpreis" ads, which would read as an unparseable price.
 BAZAR_PROBE_PARAMS = {k: v for k, v in BAZAR_PARAMS.items() if k != "price.to"}
-IMMOBILIEN_DE_PROBE_URL = (
-    "https://www.immobilien.de/Ausland/Suchergebnisse-51834.html"
-    "?search._digest=true&search._filter=ausland&search.land=at"
-    "&search.typ=kaufen&search.objektart=haus"
-)
+IMMOBILIEN_DE_PROBE_SEARCH = {
+    k: v for k, v in IMMOBILIEN_DE_SEARCH.items() if not k.startswith("price")
+}
 IMMOLIVE24_PROBE_DATA = (
     "action=search&post_form_key=immobilien_quick&f%5BCategory_ID%5D=228&f%5Bbundesland%5D=0"
 )
