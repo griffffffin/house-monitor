@@ -2235,9 +2235,13 @@ class TestPropyloOriginHelpers:
 
 
 class _RedirectResponse:
-    def __init__(self, status, location=""):
+    def __init__(self, status, location="", body=""):
         self.status = status
         self.headers = {"Location": location} if location else {}
+        self._body = body
+
+    async def text(self):
+        return self._body
 
     async def __aenter__(self):
         return self
@@ -2258,8 +2262,13 @@ class _RedirectSession:
         assert kwargs.get("allow_redirects") is False
         self.calls.append(url)
         script = self.routes[url]
-        status, location = script.pop(0) if len(script) > 1 else script[0]
-        return _RedirectResponse(status, location)
+        answer = script.pop(0) if len(script) > 1 else script[0]
+        return _RedirectResponse(*answer)
+
+
+def _willhaben_ad_page(status_id):
+    data = {"props": {"pageProps": {"advertDetails": {"advertStatus": {"id": status_id}}}}}
+    return f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script>'
 
 
 def _pro_listing(hm, n, title="Haus", price=30000.0):
@@ -2287,14 +2296,27 @@ class TestPropyloScreenListings:
                 f"{_PRO}1": [(302, _WH_HOUSE.format(1086675111))],  # copy of a known ad
                 f"{_PRO}2": [(302, _WH_FLAT.format(1086675222))],  # an apartment
                 f"{_PRO}3": [(301, "https://www.immowelt.at/expose/abc")],  # new to us
+                "https://www.immowelt.at/expose/abc": [(200, "", '{"@type":"House"}')],
                 f"{_PRO}4": [(429, "")],  # rate-limited on every attempt
                 f"{_PRO}5": [(429, ""), (302, "https://www.dibeo.at/expose/555")],  # 2nd try
+                "https://www.dibeo.at/expose/555": [(200, "", "<html>no type markers</html>")],
                 f"{_PRO}8": [(200, "")],  # Propylo serves the ad itself
                 f"{_PRO}9": [(302, _WH_HOUSE.format(1086675999))],  # missed by our scraper
+                _WH_HOUSE.format(1086675999): [(200, "", _willhaben_ad_page("active"))],
+                f"{_PRO}10": [(302, _WH_HOUSE.format(1086675010))],  # expired on willhaben
+                _WH_HOUSE.format(1086675010): [
+                    (308, "https://www.willhaben.at/iad/x?fromExpiredAdId=1")
+                ],
+                f"{_PRO}11": [(302, _WH_HOUSE.format(1086675011))],  # reserved
+                _WH_HOUSE.format(1086675011): [(200, "", _willhaben_ad_page("reserved"))],
+                f"{_PRO}12": [(302, "https://www.immobilienscout24.at/expose/x")],  # gone
+                "https://www.immobilienscout24.at/expose/x": [(410, "")],
+                f"{_PRO}13": [(302, "https://www.dibeo.at/expose/13")],  # really a flat
+                "https://www.dibeo.at/expose/13": [(200, "", '{"@type":"Apartment"}')],
             }
         )
         scraper = hm.PropyloScraper(session)
-        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9)]
+        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13)]
         known = {"wh_1086675111"}
         normal, silent, deferred = asyncio.run(
             scraper.screen_listings(cards, lambda lid: None, known.__contains__)
@@ -2302,7 +2324,9 @@ class TestPropyloScreenListings:
         assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8", "pro_9"]
         # A willhaben house our Willhaben scraper never returned is counted.
         assert scraper.unmatched_origins == {"Willhaben": 1}
-        assert [c.id for c in silent] == ["pro_1", "pro_2"]
+        # Gone originals (expired or reserved on willhaben, a 410 elsewhere) and
+        # ones the original page types as an apartment aren't emailed.
+        assert [c.id for c in silent] == ["pro_1", "pro_2", "pro_10", "pro_11", "pro_12", "pro_13"]
         assert [c.id for c in deferred] == ["pro_4"]
         # Emails link the original ad; Propylo's own page stays as it is.
         assert normal[0].url == "https://www.immowelt.at/expose/abc"
