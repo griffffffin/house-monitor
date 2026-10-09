@@ -19,6 +19,7 @@ from .dingdong import DingDongScraper
 from .sonnberger import SonnbergerScraper
 from .hegerreal import HegerRealScraper
 from .propylo import PropyloScraper
+from .lystio import LystioScraper
 
 __all__ = [
     "ImmoScout24Scraper",
@@ -42,4 +43,5 @@ __all__ = [
     "SonnbergerScraper",
     "HegerRealScraper",
     "PropyloScraper",
+    "LystioScraper",
 ]

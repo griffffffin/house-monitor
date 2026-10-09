@@ -51,6 +51,7 @@ from .scrapers import (
     ImmokralleScraper,
     ImmoLive24Scraper,
     ImmoScout24Scraper,
+    LystioScraper,
     OhneMaklerScraper,
     PropyloScraper,
     RaiffeisenScraper,
@@ -85,6 +86,7 @@ SCRAPER_SUMMARY_LABELS = {
     "SonnbergerScraper": ("Sonnberger", "ads"),
     "HegerRealScraper": ("HegerReal", "listings"),
     "PropyloScraper": ("Propylo", "listings"),
+    "LystioScraper": ("Lystio", "listings"),
 }
 
 # Listing.source (the raw, per-scraper value, e.g. "sonnberger.co.at") ->
@@ -113,6 +115,7 @@ SOURCE_DISPLAY_NAMES = {
     "sonnberger.co.at": "Sonnberger",
     "hegerreal.at": "HegerReal",
     "at.propylo.com": "Propylo",
+    "lystio.at": "Lystio",
 }
 
 
@@ -645,6 +648,7 @@ class HouseMonitor:
             SonnbergerScraper(self.session),
             HegerRealScraper(self.session),
             PropyloScraper(self.session),
+            LystioScraper(self.session),
         ]
 
         await self._load_db()

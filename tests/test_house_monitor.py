@@ -843,6 +843,68 @@ class TestPropyloCardParsing:
         assert scraper._parse_cards(html) == []
 
 
+class TestLystioApiParsing:
+    """Lystio's search API (POST https://api.lystio.at/tenement/search)."""
+
+    DATA = {
+        "res": [
+            {
+                "id": 299151,
+                "title": "Ferienhaus am Sulmsee",
+                "rentDisplay": [28000, 28000, False],
+                # The per-m² figure must never be read as the price.
+                "rentPerDisplay": [933.33, 933.33, True],
+                "pathSegments": ["kaufen", "haus", "steiermark", "leibnitz"],
+            },
+            {
+                "id": 197128,
+                "title": "",
+                "projectTitle": "Projekt in 1100 Wien",
+                "rentDisplay": [4500, 69000, False],  # a project card: min is used
+                "pathSegments": ["kaufen", "gewerbe", "wien", "favoriten"],
+            },
+            {"id": 5, "title": "Preis auf Anfrage", "rentDisplay": [None, None, False]},
+        ],
+        "paging": {"pageCount": 1},
+    }
+
+    def test_extracts_id_title_url_price(self, hm):
+        cards = hm.LystioScraper(session=None)._parse_items(self.DATA)
+        assert cards == [
+            (
+                "lys_299151",
+                "Ferienhaus am Sulmsee",
+                "https://lystio.at/kaufen/haus/steiermark/leibnitz/299151",
+                28000.0,
+            ),
+            (
+                "lys_197128",
+                "Projekt in 1100 Wien",
+                "https://lystio.at/kaufen/gewerbe/wien/favoriten/197128",
+                4500.0,
+            ),
+            ("lys_5", "Preis auf Anfrage", "https://lystio.at", 0.0),
+        ]
+
+    def test_pages_until_page_count(self, hm):
+        def _page(n):
+            item = {"id": n, "title": f"Haus {n}", "rentDisplay": [30000, 30000, False]}
+            return json.dumps({"res": [item], "paging": {"pageCount": 2, "page": n}})
+
+        class _ApiSession:
+            def __init__(self):
+                self.pages = []
+
+            def post(self, url, json=None, **kwargs):
+                self.pages.append(json["paging"]["page"])
+                return _FakeResponse(body=_page(json["paging"]["page"]))
+
+        session = _ApiSession()
+        listings = asyncio.run(hm.LystioScraper(session=session).fetch_listings())
+        assert session.pages == [1, 2]
+        assert [listing.id for listing in listings] == ["lys_1", "lys_2"]
+
+
 class TestHegerRealCardParsing:
     # Mirrors the real hegerreal.at (Justimmo) list markup: a div.realty-wrapper
     # per listing, title in h3 > a (href="/objekt/<id>?from=..."), and a
@@ -1447,6 +1509,7 @@ def test_all_scrapers_are_constructible(hm):
         hm.SonnbergerScraper,
         hm.HegerRealScraper,
         hm.PropyloScraper,
+        hm.LystioScraper,
     ]
     for cls in scraper_classes:
         assert cls(session=None) is not None

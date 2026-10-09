@@ -172,6 +172,24 @@ PROPYLO_RESOLVE_DELAY = 1.5
 PROPYLO_RESOLVE_ATTEMPTS = 4
 PROPYLO_RESOLVE_BACKOFF = 10.0
 
+# used by: LystioScraper
+LYSTIO_BASE_URL = "https://lystio.at"
+LYSTIO_API_URL = "https://api.lystio.at/tenement/search"
+# The site's own search filter (its category pages embed it as
+# "ssrSearchPayload"): type 3 = Haus, 20 = Büro, 5 = Gewerbe — the three
+# category pages the owner picked, in one query; "rent" is the purchase price
+# range for rentType "buy".
+LYSTIO_FILTER = {
+    "type": [3, 20, 5],
+    "rentType": ["buy"],
+    "rent": [EUR_PRICE_FROM, EUR_PRICE_TO],
+    "rentScope": "rent",
+    "showPriceOnRequest": True,
+    "all": True,
+}
+LYSTIO_PAGE_SIZE = 100
+LYSTIO_PROBE_FILTER = {k: v for k, v in LYSTIO_FILTER.items() if k != "rent"}
+
 # used by: HegerRealScraper
 HEGERREAL_BASE_URL = "https://www.hegerreal.at"
 # Justimmo-backed broker site, no server-side price filter parameter -> the whole
