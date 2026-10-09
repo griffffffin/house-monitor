@@ -29,6 +29,10 @@ class DibeoScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error, i.e. the
+        # returned list may be missing pages — the monitor's same-day retry
+        # loop re-runs the sources that set this flag.
+        self.incomplete = False
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "html.parser")
@@ -71,6 +75,7 @@ class DibeoScraper:
         return results
 
     async def fetch_listings(self) -> List[Listing]:
+        self.incomplete = False
         results = []
         page = 1
         seen_ids: set = set()
@@ -137,6 +142,7 @@ class DibeoScraper:
 
             except Exception as e:
                 logging.error(f"Dibeo.at: error on page {page}: {e}")
+                self.incomplete = True
                 break
 
         logging.info(f"Dibeo: {len(results)} listings")

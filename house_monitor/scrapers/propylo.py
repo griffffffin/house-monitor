@@ -35,6 +35,10 @@ class PropyloScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error, i.e. the
+        # returned list may be missing pages — the monitor's same-day retry
+        # loop re-runs the sources that set this flag.
+        self.incomplete = False
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "lxml")
@@ -80,6 +84,7 @@ class PropyloScraper:
                     html_text = await resp.text()
             except Exception as e:
                 logging.error(f"Propylo.com: fetch error {type(e).__name__}: {e} – {url}")
+                self.incomplete = True
                 break
 
             page_cards = self._parse_cards(html_text)
@@ -126,6 +131,7 @@ class PropyloScraper:
         return url_results
 
     async def fetch_listings(self) -> List[Listing]:
+        self.incomplete = False
         # The 9 Bundesland pages are independent of each other, so we paginate
         # them concurrently and merge with a single shared seen_ids set (a
         # listing could in principle appear under two regions).

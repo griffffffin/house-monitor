@@ -13,6 +13,7 @@ hand-built HTML/data fixtures.
 
 import asyncio
 import json
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from house_monitor import monitor as _hm_module
+from house_monitor import scrapers as _scrapers_module
 from house_monitor.fetch import fetch_bytes, fetch_text
 
 
@@ -1348,6 +1350,9 @@ class _FakeResponse:
     async def read(self):
         return self._body.encode("utf-8")
 
+    async def json(self, content_type=None):
+        return json.loads(self._body or "{}")
+
 
 class _RaisingContext:
     """Mimics aiohttp's request context manager blowing up on __aenter__."""
@@ -1499,6 +1504,65 @@ class TestScrapeAndNotifyRetryCollection:
 
         assert failed == []
         assert monitor.notifier.sent == []
+
+
+# ---------------------------------------------------------------------------
+# Every scraper flags itself incomplete on a fetch error, so the same-day
+# retry pass covers all sources — not just the few that used to hit broken
+# pipes (sources that timed out at 16:00 were otherwise skipped until the
+# next day's run).
+# ---------------------------------------------------------------------------
+
+
+class _TimeoutSession:
+    """Every request times out — the 16:00 concurrent-peak failure mode."""
+
+    def get(self, url, **kwargs):
+        return _RaisingContext(asyncio.TimeoutError())
+
+    post = get
+
+
+class _EmptyPageSession:
+    """Every request succeeds with an empty page: a clean run with 0 results."""
+
+    def get(self, url, **kwargs):
+        return _FakeResponse(body="")
+
+    post = get
+
+
+class _FakeUrlopenResponse:
+    """Immokralle fetches through urllib, not the aiohttp session."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return b""
+
+
+def _urlopen_timeout(*args, **kwargs):
+    raise TimeoutError("timed out")
+
+
+@pytest.mark.parametrize("name", _scrapers_module.__all__)
+class TestEveryScraperFlagsIncomplete:
+    def test_fetch_error_sets_incomplete(self, hm, name, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen_timeout)
+        scraper = getattr(hm, name)(session=_TimeoutSession())
+        asyncio.run(scraper.fetch_listings())
+        assert scraper.incomplete is True
+
+    def test_flag_resets_on_a_clean_run(self, hm, name, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeUrlopenResponse())
+        scraper = getattr(hm, name)(session=_EmptyPageSession())
+        scraper.incomplete = True  # left over from an earlier failed run
+        assert asyncio.run(scraper.fetch_listings()) == []
+        assert scraper.incomplete is False
 
 
 class TestScrapeAndNotifyDbUpdate:

@@ -24,6 +24,10 @@ class ImmodirektScraper:
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # True when the last fetch_listings() ended on an error, i.e. the
+        # returned list may be missing pages — the monitor's same-day retry
+        # loop re-runs the sources that set this flag.
+        self.incomplete = False
 
     def _parse_cards(self, html_text: str) -> list:
         import html as _html
@@ -70,6 +74,7 @@ class ImmodirektScraper:
         return results
 
     async def fetch_listings(self) -> List[Listing]:
+        self.incomplete = False
         results = []
         seen_ids: set = set()
 
@@ -131,6 +136,7 @@ class ImmodirektScraper:
 
                 except Exception as e:
                     logging.error(f"Immodirekt.at: error on page {page}: {e}", exc_info=True)
+                    self.incomplete = True
                     break
 
         logging.info(f"Immodirekt: {len(results)} listings")
