@@ -94,9 +94,18 @@ BAZAR_PARAMS = {
 }
 
 # used by: DibeoScraper
-DIBEO_URL = (
-    f"https://www.dibeo.at/obj/h-haus-kauf/cv?price.from={EUR_PRICE_FROM}&price.to={EUR_PRICE_TO}"
-)
+# Dibeo's own JSON API (the search page embeds its response for the first 25
+# hits); the server applies the price range, `page` is 0-indexed.
+DIBEO_BASE_URL = "https://www.dibeo.at"
+DIBEO_API_URL = f"{DIBEO_BASE_URL}/api/realEstate/list"
+DIBEO_PARAMS = {
+    "category": "HAUS",
+    "legalForm": "KAUF",
+    "price.from": str(EUR_PRICE_FROM),
+    "price.to": str(EUR_PRICE_TO),
+    "sort": "id,desc",
+    "size": "100",
+}
 
 # used by: FindMyHomeScraper
 FINDMYHOME_BASE_URL = "https://www.findmyhome.at"
@@ -287,7 +296,7 @@ HEALTH_PROBE_RETRY_DELAY = 5.0
 IMMOSCOUT_PROBE_URL = (
     "https://www.immobilienscout24.at/regional/oesterreich/haus-kaufen/geringster-preis-zuerst"
 )
-DIBEO_PROBE_URL = "https://www.dibeo.at/obj/h-haus-kauf/cv"
+DIBEO_PROBE_PARAMS = {k: v for k, v in DIBEO_PARAMS.items() if not k.startswith("price.")}
 FINDMYHOME_PROBE_URL = (
     "https://www.findmyhome.at/index.php?id=14&1=1&module=select&land=AT&lang=de&h_e=1&pp=100"
 )

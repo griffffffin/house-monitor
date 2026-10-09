@@ -959,23 +959,49 @@ class TestImmoScout24CardParsing:
         ]
 
 
-class TestDibeoCardParsing:
-    HTML = """
-    <a href="https://www.dibeo.at/expose/998877">
-      <h2>Charming Cottage</h2>
-      <span>€ 55.000</span>
-    </a>
-    """
+class TestDibeoApiParsing:
+    """Dibeo's JSON API (GET /api/realEstate/list, Spring-style pages)."""
+
+    DATA = {
+        "content": [
+            {
+                "id": 2290001,
+                "title": "Kleines Bauernhaus",
+                "minPrice": 70000.0,
+                "maxPrice": 70000.0,
+            },
+            {"id": 2290000, "title": "Grund", "minPrice": 95.0, "pricePerSqMeter": True},
+            {"id": 2280000, "title": "Preis auf Anfrage", "minPrice": None},
+        ],
+        "last": True,
+    }
 
     def test_extracts_id_title_url_price(self, hm):
-        scraper = hm.DibeoScraper(session=None)
-        cards = scraper._parse_cards(self.HTML)
-        assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
-        assert listing_id == "dibeo_998877"
-        assert title == "Charming Cottage"
-        assert url == "https://www.dibeo.at/expose/998877"
-        assert price == 55000.0
+        cards = hm.DibeoScraper(session=None)._parse_items(self.DATA)
+        # A per-m² figure is skipped; a missing price parses as 0.0 (dropped
+        # later by the price filter).
+        assert cards == [
+            ("dibeo_2290001", "Kleines Bauernhaus", "https://www.dibeo.at/expose/2290001", 70000.0),
+            ("dibeo_2280000", "Preis auf Anfrage", "https://www.dibeo.at/expose/2280000", 0.0),
+        ]
+
+    def test_pages_until_the_last_flag(self, hm):
+        def _page(number, last):
+            item = {"id": 100 + number, "title": f"Haus {number}", "minPrice": 30000.0}
+            return json.dumps({"content": [item], "last": last})
+
+        class _PagedSession:
+            def __init__(self):
+                self.pages = []
+
+            def get(self, url, params=None, **kwargs):
+                self.pages.append(params["page"])
+                return _FakeResponse(body=_page(int(params["page"]), params["page"] == "1"))
+
+        session = _PagedSession()
+        listings = asyncio.run(hm.DibeoScraper(session=session).fetch_listings())
+        assert session.pages == ["0", "1"]
+        assert [listing.id for listing in listings] == ["dibeo_100", "dibeo_101"]
 
 
 class TestFindMyHomeCardParsing:

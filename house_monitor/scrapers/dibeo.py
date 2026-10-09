@@ -1,32 +1,37 @@
-import asyncio
+import json
 import logging
-import re
 from datetime import datetime
 from typing import List
 
 import aiohttp
-from bs4 import BeautifulSoup
 
-from ..config import DIBEO_PROBE_URL, DIBEO_URL
-from ..fetch import fetch_page
-from ..models import Listing, parse_de_price
+from ..config import (
+    DIBEO_API_URL,
+    DIBEO_BASE_URL,
+    DIBEO_PARAMS,
+    DIBEO_PROBE_PARAMS,
+    EUR_PRICE_FROM,
+    EUR_PRICE_TO,
+)
+from ..fetch import HTTPStatusError, fetch_text
+from ..models import Listing
 
 
 class DibeoScraper:
     """
-    Dibeo.at house listings (HTML, server-rendered).
-    Cards: a[href*="/expose/"]
-    ID: the numeric segment before "/acvblr" in the href, if present,
-        otherwise the last path segment.
-    Title: h2 inside the card
-    Price: isolated from the card's full text via a "€ X" / "X €" regex
-        (needed because the title can contain other numbers, e.g. a postal
-        code), then converted with the shared parse_de_price() helper
-    Pagination: &page=N, following rel="next"; also stops early if a page
-    returns fewer than 5 new (not-already-seen) listings.
+    dibeo.at houses for sale, read from the site's own JSON API — the search
+    page server-renders this very API response for its first 25 hits. The old
+    HTML scraper stopped after page 1 (its &page=N pagination didn't advance),
+    so it saw 29 of the 54 in-range houses on 2026-10-09.
+    API:   GET /api/realEstate/list with DIBEO_PARAMS (category=HAUS,
+           legalForm=KAUF, the price range — filtered by the server —
+           sort=id,desc, size=100). Spring-style pages: `content` list, `last`
+           flag; `page` is 0-indexed.
+    Item:  id, title, minPrice/maxPrice (a range only for grouped project
+           units — minPrice is used), pricePerSqMeter (true: the figure is a
+           per-m² price, so the ad is skipped).
+    ID:    dibeo_<id>; URL: https://www.dibeo.at/expose/<id> (as before).
     """
-
-    BASE_URL = "https://www.dibeo.at"
 
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
@@ -35,121 +40,76 @@ class DibeoScraper:
         # loop re-runs the sources that set this flag.
         self.incomplete = False
 
-    def _parse_cards(self, html_text: str) -> list:
-        soup = BeautifulSoup(html_text, "html.parser")
-        items = soup.select('a[href*="/expose/"]')
+    async def _get_page(self, params: dict) -> dict:
+        status, body = await fetch_text(self.session, DIBEO_API_URL, params=params)
+        if status != 200:
+            raise HTTPStatusError(status)
+        data = json.loads(body) if body.strip() else {}
+        return data if isinstance(data, dict) else {}
+
+    def _parse_items(self, data: dict) -> list:
         results = []
-        for item in items:
-            href = item.get("href", "")
-            if not href.startswith("http"):
-                href = self.BASE_URL + href
-
-            parts = href.rstrip("/").split("/")
+        for item in data.get("content") or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            if item.get("pricePerSqMeter"):
+                logging.info(f"Dibeo.at: skipped per-m² price: {item.get('title')}")
+                continue
+            raw_id = item["id"]
+            title = (item.get("title") or "").strip() or f"Dibeo #{raw_id}"
             try:
-                acvblr_idx = parts.index("acvblr")
-                raw_id = parts[acvblr_idx - 1]
-            except (ValueError, IndexError):
-                raw_id = parts[-1].split("?")[0]
-
-            listing_id = f"dibeo_{raw_id}"
-            href = f"{self.BASE_URL}/expose/{raw_id}"
-
-            title_tag = item.find("h2")
-            title = title_tag.text.strip() if title_tag else "No title"
-
-            # Dibeo price format: "€ 1.499.000" or "€ 1.230,61" (dot=thousands,
-            # comma=decimal). The card's full text mixes the title and price
-            # together (e.g. a street/postal-code number could appear before
-            # the price), so the match must stay anchored next to the "€"
-            # sign - a plain parse_de_price(item_text) could pick up the
-            # wrong number. Once the right substring is isolated, parse_de_price
-            # does the actual German-format-to-float conversion.
-            price = 0.0
-            item_text = item.get_text()
-            price_match = re.search(r"€\s*([\d][0-9.,]*)", item_text)
-            if not price_match:
-                price_match = re.search(r"([\d][0-9.,]*)\s*€", item_text)
-            if price_match:
-                price = parse_de_price(price_match.group(1))
-
-            results.append((listing_id, title, href, price))
+                price = float(item.get("minPrice") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            results.append((f"dibeo_{raw_id}", title, f"{DIBEO_BASE_URL}/expose/{raw_id}", price))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
         self.incomplete = False
-        results = []
-        page = 1
+        results: List[Listing] = []
         seen_ids: set = set()
-
-        # Parse price bounds from DIBEO_URL (price.from / price.to params)
-        from urllib.parse import urlparse, parse_qs
-
-        _qs = parse_qs(urlparse(DIBEO_URL).query)
-        _price_from = float(_qs.get("price.from", ["0"])[0])
-        _price_to = float(_qs.get("price.to", ["1e18"])[0])
-
+        page = 0
         while True:
-            url = DIBEO_URL if page == 1 else f"{DIBEO_URL}&page={page}"
-            logging.info(f"Dibeo.at: fetching page {page} -> {url}")
+            logging.info(f"Dibeo.at: API page {page}")
             try:
-                async with self.session.get(url) as response:
-                    if response.status != 200:
-                        logging.error(f"Dibeo.at: blocked with HTTP {response.status}")
-                        break
-
-                    html = await response.text()
-                    page_cards = self._parse_cards(html)
-                    if not page_cards:
-                        logging.info("Dibeo.at: no listing elements found, stopping.")
-                        break
-
-                    found_on_page = 0
-                    for listing_id, title, href, price in page_cards:
-                        if listing_id in seen_ids:
-                            continue
-                        seen_ids.add(listing_id)
-
-                        if not title or title == "No title":
-                            continue
-
-                        if price > 0 and _price_from <= price <= _price_to:
-                            now = datetime.now().isoformat()
-                            results.append(
-                                Listing(
-                                    id=listing_id,
-                                    title=title,
-                                    price=price,
-                                    url=href,
-                                    source="Dibeo.at",
-                                    first_seen=now,
-                                    last_seen=now,
-                                )
-                            )
-                            found_on_page += 1
-
-                    logging.info(f"Dibeo.at: {found_on_page} new listings on page {page}.")
-
-                    soup = BeautifulSoup(html, "html.parser")
-                    next_link = soup.select_one('a[rel~="next"]')
-                    if next_link:
-                        page += 1
-                        await asyncio.sleep(2)
-                    else:
-                        if found_on_page < 5:
-                            logging.info("Dibeo.at: no more pages.")
-                            break
-                        page += 1
-                        await asyncio.sleep(2)
-
+                data = await self._get_page({**DIBEO_PARAMS, "page": str(page)})
+            except HTTPStatusError as e:
+                logging.warning(f"Dibeo.at: {e} on API page {page}")
+                break
             except Exception as e:
-                logging.error(f"Dibeo.at: error on page {page}: {e}")
+                logging.error(f"Dibeo.at: error on API page {page}: {type(e).__name__}: {e}")
                 self.incomplete = True
                 break
+
+            page_cards = self._parse_items(data)
+            logging.info(f"Dibeo.at: {len(page_cards)} items on API page {page}")
+            for listing_id, title, url, price in page_cards:
+                if listing_id in seen_ids:
+                    continue
+                seen_ids.add(listing_id)
+                # The API already filtered the range; this is a safety net.
+                if not (price > 0 and EUR_PRICE_FROM <= price <= EUR_PRICE_TO):
+                    continue
+                now = datetime.now().isoformat()
+                results.append(
+                    Listing(
+                        id=listing_id,
+                        title=title,
+                        price=price,
+                        url=url,
+                        source="Dibeo.at",
+                        first_seen=now,
+                        last_seen=now,
+                    )
+                )
+            if data.get("last", True) or not page_cards:
+                break
+            page += 1
 
         logging.info(f"Dibeo: {len(results)} listings")
         return results
 
     async def probe(self) -> list:
-        """Page 1 of the search without the price range, parsed like a normal
-        page — for the daily source health check (house_monitor/health.py)."""
-        return self._parse_cards(await fetch_page(self.session, DIBEO_PROBE_URL))
+        """Page 0 of the same API search without the price range, parsed like
+        a normal page — for the daily source health check (house_monitor/health.py)."""
+        return self._parse_items(await self._get_page({**DIBEO_PROBE_PARAMS, "page": "0"}))
