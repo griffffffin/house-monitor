@@ -3,7 +3,7 @@ import html as _html
 import logging
 import re
 from datetime import datetime
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -116,6 +116,11 @@ class PropyloScraper:
         # returned list may be missing pages — the monitor's same-day retry
         # loop re-runs the sources that set this flag.
         self.incomplete = False
+        # The last screen_listings(): per scraped portal, how many in-range
+        # HOUSES Propylo resolved to an original ad our own scraper of that
+        # portal never returned (only willhaben: its URL names the category).
+        # The daily error check reports a steady count (health.py).
+        self.unmatched_origins: Dict[str, int] = {}
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "lxml")
@@ -275,6 +280,7 @@ class PropyloScraper:
         silent: List[Listing] = []
         deferred: List[Listing] = []
         resolved_any = False
+        self.unmatched_origins = {}
         for listing in listings:
             known_url = stored_url(listing.id)
             if known_url is not None:
@@ -303,6 +309,9 @@ class PropyloScraper:
                 logging.info(f"Propylo.com: copy of {key}, stored silently: {listing.title}")
                 silent.append(listing)
                 continue
+            if key and key.startswith("wh_"):
+                # A willhaben house our Willhaben scraper didn't bring.
+                self.unmatched_origins["Willhaben"] = self.unmatched_origins.get("Willhaben", 0) + 1
             normal.append(listing)
         if deferred:
             logging.warning(f"Propylo.com: {len(deferred)} new card(s) unresolved, retried later")

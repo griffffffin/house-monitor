@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Tuple
 
 import aiohttp
 
@@ -39,6 +39,9 @@ class DibeoScraper:
         # returned list may be missing pages — the monitor's same-day retry
         # loop re-runs the sources that set this flag.
         self.incomplete = False
+        # (items received, the site's own total) from the last complete
+        # fetch — the daily error check compares the two (health.py).
+        self.coverage: Optional[Tuple[int, int]] = None
 
     async def _get_page(self, params: dict) -> dict:
         status, body = await fetch_text(self.session, DIBEO_API_URL, params=params)
@@ -66,6 +69,8 @@ class DibeoScraper:
 
     async def fetch_listings(self) -> List[Listing]:
         self.incomplete = False
+        self.coverage = None
+        received = reported = 0
         results: List[Listing] = []
         seen_ids: set = set()
         page = 0
@@ -83,6 +88,9 @@ class DibeoScraper:
 
             page_cards = self._parse_items(data)
             logging.info(f"Dibeo.at: {len(page_cards)} items on API page {page}")
+            if page == 0:
+                reported = int(data.get("totalElements") or 0)
+            received += len(data.get("content") or [])
             for listing_id, title, url, price in page_cards:
                 if listing_id in seen_ids:
                     continue
@@ -106,6 +114,8 @@ class DibeoScraper:
                 break
             page += 1
 
+        if not self.incomplete:
+            self.coverage = (received, reported)
         logging.info(f"Dibeo: {len(results)} listings")
         return results
 

@@ -305,6 +305,21 @@ HEALTH_STATE_FILE = os.path.join(os.path.dirname(DATA_FILE), "health-check-state
 # A probe that errors is retried this many times, this many seconds apart.
 HEALTH_PROBE_ATTEMPTS = 3
 HEALTH_PROBE_RETRY_DELAY = 5.0
+# A sharp drop: today's count below HEALTH_DROP_RATIO × the median of the
+# source's previous HEALTH_DROP_WINDOW days (needs HEALTH_DROP_MIN_HISTORY days
+# and a median of at least HEALTH_DROP_MIN_MEDIAN). Calibrated on the Aug–Oct
+# 2026 daily counts: it caught the ImmoScout24 breakage three days in and a
+# three-day FindMyHome outage, with no false alarm (0.5 added two).
+HEALTH_DROP_RATIO = 0.4
+HEALTH_DROP_MIN_MEDIAN = 5
+HEALTH_DROP_WINDOW = 14
+HEALTH_DROP_MIN_HISTORY = 7
+# Sources whose site reports its own total: fewer items received than this
+# share of it means pages went missing.
+HEALTH_COVERAGE_MIN_RATIO = 0.8
+# Propylo cross-check: this many in-range houses resolved to a willhaben ad
+# that our Willhaben scraper never returned, in one day.
+HEALTH_UNMATCHED_MIN = 2
 
 # Probe targets: page 1 of each source's search WITHOUT the price range.
 # The real search URLs carry 3000-70000 € server-side, so a working site can

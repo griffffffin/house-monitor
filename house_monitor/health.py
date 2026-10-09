@@ -12,6 +12,14 @@ same-day retries) is checked further. It counts as broken today if
     range, parsed by the scraper's own code) still fails after retries, or
   - the probe page has no card with a readable price: 0 cards means the card
     selector broke, cards without any price mean the price selector broke.
+Sources that DO return results are checked for silent partial losses too:
+  - a sharp drop against the source's own recent daily counts (drop_reason);
+  - for sources whose site reports its own total (Dibeo, Lystio,
+    Immobilien.de, Willhaben), receiving clearly fewer items than that total
+    — missing pages (coverage_reason);
+  - in-range houses that Propylo resolved to a willhaben ad our Willhaben
+    scraper never returned (the monitor counts them per day);
+  - a source that only came through the same-day retry (late).
 The same end-of-day check also counts the monitor's own errors of the day
 (email not sent, DB not saved, the daily run or this check crashing). Every
 finding keeps a streak of consecutive days; once a streak reaches
@@ -28,7 +36,18 @@ import os
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from .config import HEALTH_MIN_CONSECUTIVE, HEALTH_PROBE_ATTEMPTS, HEALTH_PROBE_RETRY_DELAY
+import statistics
+
+from .config import (
+    HEALTH_COVERAGE_MIN_RATIO,
+    HEALTH_DROP_MIN_HISTORY,
+    HEALTH_DROP_MIN_MEDIAN,
+    HEALTH_DROP_RATIO,
+    HEALTH_DROP_WINDOW,
+    HEALTH_MIN_CONSECUTIVE,
+    HEALTH_PROBE_ATTEMPTS,
+    HEALTH_PROBE_RETRY_DELAY,
+)
 
 # Email labels of the monitor's own error kinds (streak keys "internal:<kind>").
 INTERNAL_ERROR_LABELS = {
@@ -87,6 +106,36 @@ async def diagnose(scraper: Any, day_count: int, fetch_failed: bool) -> Optional
         )
     # The site and the parser work — there's just nothing in the price range.
     return None
+
+
+def drop_reason(history: List[int], today: int) -> Optional[str]:
+    """Why today's count looks like a sharp drop against the source's own
+    previous daily counts (`history`, oldest first), or None."""
+    if len(history) < HEALTH_DROP_MIN_HISTORY:
+        return None
+    median = statistics.median(history[-HEALTH_DROP_WINDOW:])
+    if median < HEALTH_DROP_MIN_MEDIAN or today >= HEALTH_DROP_RATIO * median:
+        return None
+    return (
+        f"ma csak {today} találat, az elmúlt napokban jellemzően {median:g} — "
+        "lehet, hogy egy része kimarad"
+    )
+
+
+def push_history(history: List[int], today: int) -> List[int]:
+    """The daily count history with today's count added, window-sized."""
+    return (list(history) + [today])[-HEALTH_DROP_WINDOW:]
+
+
+def coverage_reason(received: int, reported: int) -> Optional[str]:
+    """Why the items received fall clearly short of the site's own total, or
+    None."""
+    if reported <= 0 or received >= HEALTH_COVERAGE_MIN_RATIO * reported:
+        return None
+    return (
+        f"az oldal szerint {reported} találat van, de csak {received} érkezett meg — "
+        "lehet, hogy oldalak maradnak ki"
+    )
 
 
 def update_streaks(

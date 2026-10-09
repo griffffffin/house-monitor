@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Tuple
 
 import aiohttp
 
@@ -40,6 +40,9 @@ class ImmobilienDeScraper:
         # returned list may be missing pages — the monitor's same-day retry
         # loop re-runs the sources that set this flag.
         self.incomplete = False
+        # (items received, the site's own total) from the last complete
+        # fetch — the daily error check compares the two (health.py).
+        self.coverage: Optional[Tuple[int, int]] = None
 
     async def _csrf_token(self) -> str:
         """Let the API set its CSRF cookie and return the value to echo back."""
@@ -78,9 +81,12 @@ class ImmobilienDeScraper:
 
     async def fetch_listings(self) -> List[Listing]:
         self.incomplete = False
+        self.coverage = None
+        received = reported = 0
         results: List[Listing] = []
         seen_ids: set = set()
-        body = dict(IMMOBILIEN_DE_SEARCH)
+        # count=True makes the API include the search's `total`.
+        body = dict(IMMOBILIEN_DE_SEARCH, count=True)
         page = 1
         try:
             token = await self._csrf_token()
@@ -89,6 +95,9 @@ class ImmobilienDeScraper:
                 data = await self._search(body, token)
                 page_cards = self._parse_items(data)
                 logging.info(f"Immobilien.de: {len(page_cards)} items – page {page}")
+                if page == 1:
+                    reported = int(data.get("total") or 0)
+                received += len(data.get("items") or [])
                 for listing_id, title, listing_url, price in page_cards:
                     if listing_id in seen_ids:
                         continue
@@ -121,6 +130,8 @@ class ImmobilienDeScraper:
             logging.error(f"Immobilien.de: fetch error {type(e).__name__}: {e}")
             self.incomplete = True
 
+        if not self.incomplete:
+            self.coverage = (received, reported)
         logging.info(f"Immobilien.de: {len(results)} ads")
         return results
 

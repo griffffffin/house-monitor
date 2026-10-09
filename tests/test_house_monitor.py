@@ -42,6 +42,8 @@ def _new_monitor(hm):
     monitor.day_counts = {}
     monitor.today_errors = {}
     monitor.last_email_ok = True
+    monitor.day_unmatched = {}
+    monitor.day_late = []
     return monitor
 
 
@@ -893,7 +895,9 @@ class TestLystioApiParsing:
     def test_pages_until_page_count(self, hm):
         def _page(n):
             item = {"id": n, "title": f"Haus {n}", "rentDisplay": [30000, 30000, False]}
-            return json.dumps({"res": [item], "paging": {"pageCount": 2, "page": n}})
+            return json.dumps(
+                {"res": [item], "paging": {"pageCount": 2, "page": n, "cardCount": 2}}
+            )
 
         class _ApiSession:
             def __init__(self):
@@ -904,9 +908,11 @@ class TestLystioApiParsing:
                 return _FakeResponse(body=_page(json["paging"]["page"]))
 
         session = _ApiSession()
-        listings = asyncio.run(hm.LystioScraper(session=session).fetch_listings())
+        scraper = hm.LystioScraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
         assert session.pages == [1, 2]
         assert [listing.id for listing in listings] == ["lys_1", "lys_2"]
+        assert scraper.coverage == (2, 2)
 
 
 class TestHegerRealCardParsing:
@@ -1054,7 +1060,7 @@ class TestDibeoApiParsing:
     def test_pages_until_the_last_flag(self, hm):
         def _page(number, last):
             item = {"id": 100 + number, "title": f"Haus {number}", "minPrice": 30000.0}
-            return json.dumps({"content": [item], "last": last})
+            return json.dumps({"content": [item], "last": last, "totalElements": 2})
 
         class _PagedSession:
             def __init__(self):
@@ -1065,9 +1071,11 @@ class TestDibeoApiParsing:
                 return _FakeResponse(body=_page(int(params["page"]), params["page"] == "1"))
 
         session = _PagedSession()
-        listings = asyncio.run(hm.DibeoScraper(session=session).fetch_listings())
+        scraper = hm.DibeoScraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
         assert session.pages == ["0", "1"]
         assert [listing.id for listing in listings] == ["dibeo_100", "dibeo_101"]
+        assert scraper.coverage == (2, 2)  # (received, the site's own total)
 
 
 class TestFindMyHomeCardParsing:
@@ -1330,7 +1338,7 @@ class TestImmobilienDeApiParsing:
 
         def _page(legacy_id, title, price, next_cursor):
             item = {"legacyId": legacy_id, "title": title, "purchasePrice": price, "country": "at"}
-            return json.dumps({"items": [item], "nextCursor": next_cursor})
+            return json.dumps({"items": [item], "nextCursor": next_cursor, "total": 2})
 
         pages = {None: _page(1, "A", "20000", "c2"), "c2": _page(2, "B", "30000", None)}
 
@@ -1355,6 +1363,8 @@ class TestImmobilienDeApiParsing:
         assert [b.get("cursor") for b in session.bodies] == [None, "c2"]
         assert all(h == {"x-csrf-token": "tok123"} for h in session.headers)
         assert scraper.incomplete is False
+        assert session.bodies[0]["count"] is True  # asks the API for its total
+        assert scraper.coverage == (2, 2)
 
 
 class TestFindheimCardParsing:
@@ -2068,6 +2078,103 @@ class TestErrorsInTheDailyEmail:
         assert _new_monitor(hm)._start_of_day() == []
 
 
+class TestPartialLossRules:
+    def test_drop_needs_history_and_a_real_baseline(self):
+        assert _health.drop_reason([20] * 6, 0) is None  # too little history
+        assert _health.drop_reason([3] * 10, 0) is None  # median below 5
+        assert _health.drop_reason([20] * 10, 9) is None  # 9 >= 0.4 * 20
+        assert "ma csak 7 találat" in _health.drop_reason([20] * 10, 7)
+
+    def test_history_keeps_a_window(self):
+        assert _health.push_history(list(range(14)), 99) == list(range(1, 14)) + [99]
+
+    def test_coverage(self):
+        assert _health.coverage_reason(54, 54) is None
+        assert _health.coverage_reason(44, 54) is None  # 81%: within tolerance
+        assert "54 találat" in _health.coverage_reason(29, 54)
+        assert _health.coverage_reason(0, 0) is None
+
+
+class _NamedScraper(_OkScraper):
+    """A source with a fixed day count and optional coverage."""
+
+    def __init__(self, coverage=None):
+        super().__init__([])
+        self.coverage = coverage
+
+    async def probe(self):
+        return _PRICED
+
+
+class TestPartialLossFindings:
+    def test_drop_coverage_unmatched_and_late(self, hm):
+        monitor = _new_monitor(hm)
+        dropping, short, late = _NamedScraper(), _NamedScraper(coverage=(29, 54)), object()
+        monitor.day_counts = {"_NamedScraper": 3}
+        monitor.day_unmatched = {"Willhaben": 2}
+        monitor.day_late = [late]
+        state = {"count_history": {"_NamedScraper": [20] * 10}}
+        findings = {}
+        monitor._source_findings_without_probe([dropping, short], state, findings)
+        assert "ma csak 3 találat" in findings["drop:_NamedScraper"]
+        assert "54 találat" in findings["coverage:_NamedScraper"]
+        assert "2 olyan" in findings["missing:Willhaben"]
+        assert "újrapróbálásból" in findings["late:object"]
+        assert state["count_history"]["_NamedScraper"][-1] == 3
+
+    def test_one_unmatched_house_a_day_is_tolerated(self, hm):
+        monitor = _new_monitor(hm)
+        monitor.day_unmatched = {"Willhaben": 1}
+        findings = {}
+        monitor._source_findings_without_probe([], {}, findings)
+        assert findings == {}
+
+    def test_a_broken_source_is_not_also_dropping(self, hm, state_file):
+        state_file.write_text(
+            json.dumps({"count_history": {"_ProbeScraper": [20] * 10}}), encoding="utf-8"
+        )
+        monitor = _new_monitor(hm)
+        monitor.day_counts = {"_ProbeScraper": 0}
+        asyncio.run(monitor._end_of_day_check([_ProbeScraper(cards=[])], []))
+        assert set(_read(state_file)["streaks"]) == {"source:_ProbeScraper"}
+
+
+class _FlakyOnceScraper(_OkScraper):
+    """Fails at 16:00, succeeds on the retry."""
+
+    def __init__(self):
+        super().__init__([])
+        self.calls = 0
+
+    async def fetch_listings(self):
+        self.calls += 1
+        self.incomplete = self.calls == 1
+        return []
+
+
+class TestLateSourcesAndCrossCheckTotals:
+    def test_a_source_rescued_by_the_retry_is_late(self, hm, state_file, monkeypatch):
+        monkeypatch.setattr(hm, "INCOMPLETE_RETRY_DELAYS", (0,))
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier()
+        flaky, fine = _FlakyOnceScraper(), _OkScraper([])
+        assert asyncio.run(monitor._daily_run([flaky, fine])) == []
+        assert monitor.day_late == [flaky]
+
+    def test_unmatched_houses_add_up_over_the_day(self, hm, state_file):
+        class _Screening(_ScreeningScraper):
+            async def screen_listings(self, listings, stored_url, is_known):
+                self.unmatched_origins = {"Willhaben": 1}
+                return listings, [], []
+
+        monitor = _new_monitor(hm)
+        monitor.notifier = _ResultNotifier()
+        scraper = _Screening([])
+        asyncio.run(monitor._scrape_and_notify([scraper]))
+        asyncio.run(monitor._scrape_and_notify([scraper]))  # e.g. the retry pass
+        assert monitor.day_unmatched == {"Willhaben": 2}
+
+
 # ---------------------------------------------------------------------------
 # Propylo: resolving aggregator cards to the original ads
 # ---------------------------------------------------------------------------
@@ -2178,15 +2285,18 @@ class TestPropyloScreenListings:
                 f"{_PRO}4": [(429, "")],  # rate-limited on every attempt
                 f"{_PRO}5": [(429, ""), (302, "https://www.dibeo.at/expose/555")],  # 2nd try
                 f"{_PRO}8": [(200, "")],  # Propylo serves the ad itself
+                f"{_PRO}9": [(302, _WH_HOUSE.format(1086675999))],  # missed by our scraper
             }
         )
         scraper = hm.PropyloScraper(session)
-        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8)]
+        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9)]
         known = {"wh_1086675111"}
         normal, silent, deferred = asyncio.run(
             scraper.screen_listings(cards, lambda lid: None, known.__contains__)
         )
-        assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8"]
+        assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8", "pro_9"]
+        # A willhaben house our Willhaben scraper never returned is counted.
+        assert scraper.unmatched_origins == {"Willhaben": 1}
         assert [c.id for c in silent] == ["pro_1", "pro_2"]
         assert [c.id for c in deferred] == ["pro_4"]
         # Emails link the original ad; Propylo's own page stays as it is.

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -39,6 +39,9 @@ class WillhabenScraper:
         # (missing results possible) — picked up by the monitor's same-day
         # retry loop.
         self.incomplete = False
+        # (items received, the site's own total) from the last complete
+        # fetch — the daily error check compares the two (health.py).
+        self.coverage: Optional[Tuple[int, int]] = None
 
     def _extract_attr(self, attributes: list, name: str) -> str:
         """Extracts the value of the named attribute from the attributes list."""
@@ -84,26 +87,30 @@ class WillhabenScraper:
             results.append((listing_id, title, listing_url, price))
         return results
 
-    def _extract_adverts(self, html: str) -> list:
-        """The advert list from the page's __NEXT_DATA__ JSON ([] if missing)."""
+    def _search_result(self, html: str) -> dict:
+        """The searchResult object of the page's __NEXT_DATA__ JSON ({} if
+        missing): advertSummaryList.advertSummary holds the adverts, rowsFound
+        the search's total."""
         next_data_match = re.search(
             r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
         )
-        adverts = []
         if next_data_match:
             try:
                 nd = json.loads(next_data_match.group(1))
-                adverts = (
-                    nd.get("props", {})
-                    .get("pageProps", {})
-                    .get("searchResult", {})
-                    .get("advertSummaryList", {})
-                    .get("advertSummary", [])
-                )
-                logging.info(f"Willhaben.at: __NEXT_DATA__ -> {len(adverts)} listings in the JSON.")
+                return nd.get("props", {}).get("pageProps", {}).get("searchResult", {}) or {}
             except Exception as e:
                 logging.warning(f"Willhaben.at: __NEXT_DATA__ parse error: {e}")
+        return {}
+
+    @staticmethod
+    def _adverts_of(search_result: dict) -> list:
+        adverts = search_result.get("advertSummaryList", {}).get("advertSummary", [])
+        logging.info(f"Willhaben.at: __NEXT_DATA__ -> {len(adverts)} listings in the JSON.")
         return adverts
+
+    def _extract_adverts(self, html: str) -> list:
+        """The advert list from the page's __NEXT_DATA__ JSON ([] if missing)."""
+        return self._adverts_of(self._search_result(html))
 
     def _parse_json_adverts(self, adverts: list) -> list:
         results = []
@@ -169,6 +176,8 @@ class WillhabenScraper:
         results = []
         seen_ids: set = set()
         self.incomplete = False
+        self.coverage = None
+        received = reported = 0
 
         for base_url in WILLHABEN_URLS:
             page = 1
@@ -183,7 +192,11 @@ class WillhabenScraper:
                         break
 
                     # --- Primary: extract the __NEXT_DATA__ JSON ---
-                    adverts = self._extract_adverts(html)
+                    search_result = self._search_result(html)
+                    adverts = self._adverts_of(search_result)
+                    if page == 1:
+                        reported += int(search_result.get("rowsFound") or 0)
+                    received += len(adverts)
 
                     # --- Secondary fallback: HTML DOM cards ---
                     if not adverts:
@@ -266,6 +279,8 @@ class WillhabenScraper:
                     break
 
         logging.info(f"Willhaben: {len(results)} listings")
+        if not self.incomplete:
+            self.coverage = (received, reported)
         return results
 
     async def probe(self) -> list:

@@ -22,6 +22,7 @@ from .config import (
     EUR_PRICE_TO,
     HEALTH_MIN_CONSECUTIVE,
     HEALTH_STATE_FILE,
+    HEALTH_UNMATCHED_MIN,
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SKIP_NO_PERSIST,
@@ -133,6 +134,11 @@ class HouseMonitor:
         self.today_errors: Dict[str, str] = {}
         # Whether the last _scrape_and_notify() email went out.
         self.last_email_ok = True
+        # Today's Propylo cross-check (portal -> in-range houses our own
+        # scraper of it never returned) and the sources that only came
+        # through the same-day retry — both for the end-of-day check.
+        self.day_unmatched: Dict[str, int] = {}
+        self.day_late: List[Any] = []
 
     def _setup_logging(self):
         logger = logging.getLogger()
@@ -469,6 +475,8 @@ class HouseMonitor:
                 db_changed = True
             if deferred and scraper not in failed:
                 failed.append(scraper)
+            for portal, count in getattr(scraper, "unmatched_origins", {}).items():
+                self.day_unmatched[portal] = self.day_unmatched.get(portal, 0) + count
 
         for listing in all_listings:
             title_lower = listing.title.lower()
@@ -574,6 +582,8 @@ class HouseMonitor:
         """Record today's run and return the error alerts due in today's 16:00
         email: what the last end-of-day check left pending, plus a missed-run
         notice once the monitor hadn't run for HEALTH_MIN_CONSECUTIVE+ days."""
+        self.day_unmatched = {}
+        self.day_late = []
         try:
             today = date.today().isoformat()
             state = health.load_state(HEALTH_STATE_FILE)
@@ -628,6 +638,7 @@ class HouseMonitor:
 
             findings: Dict[str, str] = {}
             if check_sources:
+                self._source_findings_without_probe(scrapers, state, findings)
                 reasons = await asyncio.gather(
                     *(
                         health.diagnose(
@@ -640,9 +651,10 @@ class HouseMonitor:
                 )
                 for scraper, reason in zip(scrapers, reasons):
                     if reason:
-                        label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
-                        name = label[0] if label else scraper.__class__.__name__
+                        name = self._display_name(scraper)
                         findings[f"source:{name}"] = reason
+                        # A source that broke outright isn't "dropping" too.
+                        findings.pop(f"drop:{name}", None)
             for kind, detail in self.today_errors.items():
                 findings[f"internal:{kind}"] = detail
 
@@ -665,6 +677,45 @@ class HouseMonitor:
                 "health_check": f"a napi hibaellenőrzés hibával leállt ({health.format_error(e)})"
             }
 
+    @staticmethod
+    def _display_name(scraper: Any) -> str:
+        label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
+        return label[0] if label else scraper.__class__.__name__
+
+    def _source_findings_without_probe(
+        self, scrapers: List[Any], state: Dict[str, Any], findings: Dict[str, str]
+    ) -> None:
+        """The day's partial-loss findings that need no request: a sharp drop
+        against the source's own daily counts, too few items against the
+        site's own total, the Propylo cross-check, and late sources. Also adds
+        today's counts to the per-source history kept in `state`."""
+        history = state.get("count_history") or {}
+        for scraper in scrapers:
+            name = self._display_name(scraper)
+            count = self.day_counts.get(scraper.__class__.__name__, 0)
+            reason = health.drop_reason(history.get(name, []), count)
+            if reason:
+                findings[f"drop:{name}"] = reason
+            history[name] = health.push_history(history.get(name, []), count)
+            coverage = getattr(scraper, "coverage", None)
+            if coverage:
+                reason = health.coverage_reason(*coverage)
+                if reason:
+                    findings[f"coverage:{name}"] = reason
+        state["count_history"] = history
+        for portal, count in self.day_unmatched.items():
+            if count >= HEALTH_UNMATCHED_MIN:
+                findings[f"missing:{portal}"] = (
+                    f"a Propylón ma {count} olyan ársávba eső ház jelent meg a(z) {portal} "
+                    f"oldaláról, amit a saját {portal}-scraperünk nem hozott — lehet, hogy "
+                    "kimaradnak hirdetések"
+                )
+        for scraper in self.day_late:
+            findings[f"late:{self._display_name(scraper)}"] = (
+                "16:00-kor hibával állt le, csak az újrapróbálásból jött meg "
+                "(késve, külön emailben)"
+            )
+
     async def _daily_run(self, scrapers: List[Any]) -> List[Any]:
         """The 16:00 run with its same-day retries; returns the sources still
         failing at the end."""
@@ -673,6 +724,7 @@ class HouseMonitor:
         failed = await self._scrape_and_notify(scrapers, alerts=alerts)
         if alerts and self.last_email_ok:
             self._clear_reported_alerts()
+        failed_at_1600 = list(failed)
 
         # Same-day retry: re-run ONLY the failed sources after a wait. The
         # main email above already went out from the healthy sources,
@@ -695,6 +747,7 @@ class HouseMonitor:
             log_notice(
                 f"Still incomplete after retries: {names} — giving up until the next scheduled run."
             )
+        self.day_late = [scraper for scraper in failed_at_1600 if scraper not in failed]
         return failed
 
     async def run(self):
