@@ -114,9 +114,10 @@ class PropyloScraper:
     That card URL redirects to the original ad on another portal:
       screen_listings() resolves each NEW card (paced — bursts get HTTP 429),
       keeps houses only, drops copies of ads a scraped portal already has
-      (by the original ad's id), and checks the remaining originals: gone
-      (expired) ones and those the original page types as an apartment are
-      dropped too; the rest are emailed with the original URL.
+      (by the original ad's id); on the very first pass it also checks the
+      remaining originals and drops gone (expired) ones and those the
+      original page types as an apartment; the rest are emailed with the
+      original URL.
     Pagination: page 1 = the region URL, page N = region URL + "/N", with the
       query string appended AFTER the /N segment; past the last page the server
       returns HTTP 200 with 0 cards (no 404).
@@ -314,11 +315,17 @@ class PropyloScraper:
         listings: List[Listing],
         stored_url: Callable[[str], Optional[str]],
         is_known: Callable[[str], bool],
+        check_originals: bool = False,
     ) -> Tuple[List[Listing], List[Listing], List[Listing]]:
         """Sort this run's cards before the monitor's duplicate check.
         stored_url(listing_id) is the URL kept in the seen-DB (None if the card
         is new); is_known(key) says whether an original ad's origin_key() is
-        already in the DB or in this run. Returns (normal, silent, deferred):
+        already in the DB or in this run; check_originals makes it fetch each
+        remaining candidate's original (_check_original) — the monitor sets it
+        only on the very first pass, when Propylo's whole backlog of stale ads
+        and untitled flats arrives at once; later runs only see the day's
+        fresh cards and don't open the originals (the owner's choice).
+        Returns (normal, silent, deferred):
           normal   – the usual new / price-change handling, with the original
                      ad's URL;
           silent   – stored without an email: not a house, or a copy of an ad
@@ -359,17 +366,17 @@ class PropyloScraper:
                 logging.info(f"Propylo.com: copy of {key}, stored silently: {listing.title}")
                 silent.append(listing)
                 continue
-            verdict = await self._check_original(original) if original else None
+            verdict = await self._check_original(original) if original and check_originals else None
             if verdict in ("gone", "apartment"):
                 logging.info(
                     f"Propylo.com: original is {verdict}, stored silently: {listing.title}"
                 )
                 silent.append(listing)
                 continue
-            if verdict == "live" and key and key.startswith("wh_"):
-                # A live willhaben house our Willhaben scraper didn't bring.
+            if key and key.startswith("wh_"):
+                # A willhaben house our Willhaben scraper didn't bring.
                 self.unmatched_origins["Willhaben"] = self.unmatched_origins.get("Willhaben", 0) + 1
-            # verdict None (couldn't be checked): rather email it than lose it.
+            # verdict None (not checked, or couldn't be): rather email it than lose it.
             normal.append(listing)
         if deferred:
             logging.warning(f"Propylo.com: {len(deferred)} new card(s) unresolved, retried later")

@@ -2168,7 +2168,7 @@ class TestLateSourcesAndCrossCheckTotals:
 
     def test_unmatched_houses_add_up_over_the_day(self, hm, state_file):
         class _Screening(_ScreeningScraper):
-            async def screen_listings(self, listings, stored_url, is_known):
+            async def screen_listings(self, listings, stored_url, is_known, check_originals=False):
                 self.unmatched_origins = {"Willhaben": 1}
                 return listings, [], []
 
@@ -2319,7 +2319,9 @@ class TestPropyloScreenListings:
         cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13)]
         known = {"wh_1086675111"}
         normal, silent, deferred = asyncio.run(
-            scraper.screen_listings(cards, lambda lid: None, known.__contains__)
+            scraper.screen_listings(
+                cards, lambda lid: None, known.__contains__, check_originals=True
+            )
         )
         assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8", "pro_9"]
         # A willhaben house our Willhaben scraper never returned is counted.
@@ -2333,6 +2335,17 @@ class TestPropyloScreenListings:
         assert normal[1].url == "https://www.dibeo.at/expose/555"
         assert normal[2].url == f"{_PRO}8"
         assert session.calls.count(f"{_PRO}4") == _propylo.PROPYLO_RESOLVE_ATTEMPTS
+
+    def test_originals_are_not_opened_after_the_first_pass(self, hm, no_resolve_delay):
+        expired = _WH_HOUSE.format(1086675010)
+        session = _RedirectSession({f"{_PRO}10": [(302, expired)]})  # no route for the ad
+        scraper = hm.PropyloScraper(session)
+        normal, silent, _ = asyncio.run(
+            scraper.screen_listings([_pro_listing(hm, 10)], lambda lid: None, lambda k: False)
+        )
+        assert session.calls == [f"{_PRO}10"]  # the willhaben ad itself is never fetched
+        assert [c.id for c in normal] == ["pro_10"] and silent == []
+        assert scraper.unmatched_origins == {"Willhaben": 1}
 
     def test_cards_already_in_the_db_are_not_resolved_again(self, hm, no_resolve_delay):
         session = _RedirectSession({})  # any request would raise KeyError
@@ -2353,7 +2366,9 @@ class TestPropyloScreenListings:
 class _ScreeningScraper(_OkScraper):
     """A stand-in aggregator: screen_listings() splits by title."""
 
-    async def screen_listings(self, listings, stored_url, is_known):
+    async def screen_listings(self, listings, stored_url, is_known, check_originals=False):
+        self.check_originals_seen = check_originals
+
         def pick(word):
             return [listing for listing in listings if word in listing.title]
 
@@ -2380,6 +2395,10 @@ class TestScrapeAndNotifyScreening:
         # The deferred card isn't stored; the blacklisted one is.
         assert set(monitor.seen) == {"pro_1", "pro_2", "pro_4"}
         assert failed == [scraper]  # ... and the source is retried the same day
+        assert scraper.check_originals_seen is True  # no Propylo card in the DB yet
+
+        asyncio.run(monitor._scrape_and_notify([scraper]))
+        assert scraper.check_originals_seen is False  # its cards are in the DB now
 
     def test_origin_lookup_ignores_the_aggregators_own_entries(self, hm):
         monitor = _new_monitor(hm)
