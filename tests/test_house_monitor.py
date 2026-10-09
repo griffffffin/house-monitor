@@ -2152,6 +2152,11 @@ class _FlakyOnceScraper(_OkScraper):
         return []
 
 
+def test_memory_snapshot_never_raises(hm):
+    snapshot = hm.HouseMonitor._memory_snapshot()
+    assert snapshot.startswith("VmRSS=") or snapshot.startswith("unavailable")
+
+
 class TestLateSourcesAndCrossCheckTotals:
     def test_a_source_rescued_by_the_retry_is_late(self, hm, state_file, monkeypatch):
         monkeypatch.setattr(hm, "INCOMPLETE_RETRY_DELAYS", (0,))

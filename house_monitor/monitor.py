@@ -716,9 +716,23 @@ class HouseMonitor:
                 "(késve, külön emailben)"
             )
 
+    @staticmethod
+    def _memory_snapshot() -> str:
+        """The process's resident and swapped-out memory, from /proc (Linux).
+        Logged at the start of each daily run: the first requests of the 16:00
+        run time out together while the process — idle for 24 hours, partly
+        swapped out — pages back in, so this tells whether swap is the cause."""
+        try:
+            with open("/proc/self/status", encoding="ascii") as f:
+                fields = dict(line.split(":", 1) for line in f if ":" in line)
+            return f"VmRSS={fields['VmRSS'].strip()}, VmSwap={fields['VmSwap'].strip()}"
+        except Exception as e:
+            return f"unavailable ({type(e).__name__})"
+
     async def _daily_run(self, scrapers: List[Any]) -> List[Any]:
         """The 16:00 run with its same-day retries; returns the sources still
         failing at the end."""
+        logging.info(f"Process memory at run start: {self._memory_snapshot()}")
         alerts = self._start_of_day()
         log_notice("Searching...")
         failed = await self._scrape_and_notify(scrapers, alerts=alerts)
