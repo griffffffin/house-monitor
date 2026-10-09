@@ -1271,22 +1271,32 @@ class TestWillhabenJsonAdvertParsing:
         assert url == "https://www.willhaben.at/iad/immobilien/d/haus-kaufen/wien/haus-123456789/"
         assert price == 45000.0
 
-    def test_per_square_meter_price_is_excluded(self, hm):
-        adverts = [
-            {
-                "id": 1,
-                "description": "Grundstück",
-                "attributes": {
-                    "attribute": [
-                        {"name": "URL_SLUG", "values": ["/iad/x"]},
-                        {"name": "PRICE", "values": ["6700"]},
-                        {"name": "LIVING_AREA", "values": ["15"]},
-                    ]
-                },
-            }
-        ]
+    @staticmethod
+    def _advert(price, display, area):
+        return {
+            "id": 1,
+            "description": "Wochenendhaus",
+            "attributes": {
+                "attribute": [
+                    {"name": "URL_SLUG", "values": ["/iad/x"]},
+                    {"name": "PRICE", "values": [price]},
+                    {"name": "PRICE_FOR_DISPLAY", "values": [display]},
+                    {"name": "ESTATE_SIZE", "values": [area]},
+                    {"name": "PRICE/SQUARE_METER", "values": ["950"]},
+                ]
+            },
+        }
+
+    def test_total_price_of_an_ad_with_an_area_is_kept(self, hm):
+        # Regression: the old "price × area > EUR_PRICE_TO => per-m² price"
+        # guess dropped this real 19 000 € / 20 m² ad (and ~149 others a day).
         scraper = hm.WillhabenScraper(session=None)
-        assert scraper._parse_json_adverts(adverts) == []
+        results = scraper._parse_json_adverts([self._advert("19000", "€ 19.000", "20")])
+        assert [r[3] for r in results] == [19000.0]
+
+    def test_explicit_per_square_meter_display_price_is_excluded(self, hm):
+        scraper = hm.WillhabenScraper(session=None)
+        assert scraper._parse_json_adverts([self._advert("6700", "€ 6.700/m²", "15")]) == []
 
     def test_foreign_listing_is_excluded(self, hm):
         adverts = [

@@ -150,34 +150,17 @@ class WillhabenScraper:
                 price_str = self._extract_attr(attrs, "PRICE_FOR_DISPLAY")
             price = parse_de_price(price_str)
 
-            # Some Willhaben listings' PRICE attribute is a
-            # per-square-meter price (e.g. € 6,700/m²) instead of
-            # the total purchase price. If the property's size is
-            # known and price × area > EUR_PRICE_TO, it's
-            # definitely a per-m² price -> exclude it.
-            if price > 0:
-                living_area = 0.0
-                for area_attr in (
-                    "ESTATE_SIZE",
-                    "PROPERTY_SIZE_LIVING_AREA",
-                    "LIVING_AREA",
-                    "USABLE_AREA",
-                ):
-                    area_str = self._extract_attr(attrs, area_attr)
-                    if area_str:
-                        try:
-                            living_area = float(area_str.replace(",", "."))
-                        except ValueError:
-                            pass
-                        if living_area > 0:
-                            break
-                if living_area > 0 and price * living_area > EUR_PRICE_TO:
-                    logging.info(
-                        f"Willhaben.at: excluded per-m² price "
-                        f"(price={price:.0f}€/m², area={living_area:.0f}m², "
-                        f"total≈{price * living_area:.0f}€): id={raw_id}"
-                    )
-                    continue
+            # PRICE is the total price: willhaben carries the per-m² price in
+            # separate attributes (PRICE/SQUARE_METER…) and PRICE_FOR_DISPLAY
+            # reads "€ 19.000". Skip an ad only if its displayed price is
+            # explicitly per m². (The former guess "price × area > EUR_PRICE_TO
+            # means a per-m² price" dropped nearly every real ad that states
+            # its area — e.g. a 19 000 € / 20 m² holiday hut; 149 ads in one
+            # run on 2026-10-09.)
+            display = self._extract_attr(attrs, "PRICE_FOR_DISPLAY")
+            if re.search(r"/\s*m[²2]", display):
+                logging.info(f"Willhaben.at: excluded per-m² price '{display}': id={raw_id}")
+                continue
 
             results.append((listing_id, title, listing_url, price))
         return results
