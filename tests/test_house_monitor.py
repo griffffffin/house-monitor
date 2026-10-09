@@ -2174,7 +2174,7 @@ class TestLateSourcesAndCrossCheckTotals:
 
     def test_unmatched_houses_add_up_over_the_day(self, hm, state_file):
         class _Screening(_ScreeningScraper):
-            async def screen_listings(self, listings, stored_url, is_known, check_originals=False):
+            async def screen_listings(self, listings, stored_url, is_known):
                 self.unmatched_origins = {"Willhaben": 1}
                 return listings, [], []
 
@@ -2241,13 +2241,9 @@ class TestPropyloOriginHelpers:
 
 
 class _RedirectResponse:
-    def __init__(self, status, location="", body=""):
+    def __init__(self, status, location=""):
         self.status = status
         self.headers = {"Location": location} if location else {}
-        self._body = body
-
-    async def text(self):
-        return self._body
 
     async def __aenter__(self):
         return self
@@ -2270,11 +2266,6 @@ class _RedirectSession:
         script = self.routes[url]
         answer = script.pop(0) if len(script) > 1 else script[0]
         return _RedirectResponse(*answer)
-
-
-def _willhaben_ad_page(status_id):
-    data = {"props": {"pageProps": {"advertDetails": {"advertStatus": {"id": status_id}}}}}
-    return f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script>'
 
 
 def _pro_listing(hm, n, title="Haus", price=30000.0):
@@ -2302,56 +2293,30 @@ class TestPropyloScreenListings:
                 f"{_PRO}1": [(302, _WH_HOUSE.format(1086675111))],  # copy of a known ad
                 f"{_PRO}2": [(302, _WH_FLAT.format(1086675222))],  # an apartment
                 f"{_PRO}3": [(301, "https://www.immowelt.at/expose/abc")],  # new to us
-                "https://www.immowelt.at/expose/abc": [(200, "", '{"@type":"House"}')],
                 f"{_PRO}4": [(429, "")],  # rate-limited on every attempt
                 f"{_PRO}5": [(429, ""), (302, "https://www.dibeo.at/expose/555")],  # 2nd try
-                "https://www.dibeo.at/expose/555": [(200, "", "<html>no type markers</html>")],
                 f"{_PRO}8": [(200, "")],  # Propylo serves the ad itself
                 f"{_PRO}9": [(302, _WH_HOUSE.format(1086675999))],  # missed by our scraper
-                _WH_HOUSE.format(1086675999): [(200, "", _willhaben_ad_page("active"))],
-                f"{_PRO}10": [(302, _WH_HOUSE.format(1086675010))],  # expired on willhaben
-                _WH_HOUSE.format(1086675010): [
-                    (308, "https://www.willhaben.at/iad/x?fromExpiredAdId=1")
-                ],
-                f"{_PRO}11": [(302, _WH_HOUSE.format(1086675011))],  # reserved
-                _WH_HOUSE.format(1086675011): [(200, "", _willhaben_ad_page("reserved"))],
-                f"{_PRO}12": [(302, "https://www.immobilienscout24.at/expose/x")],  # gone
-                "https://www.immobilienscout24.at/expose/x": [(410, "")],
-                f"{_PRO}13": [(302, "https://www.dibeo.at/expose/13")],  # really a flat
-                "https://www.dibeo.at/expose/13": [(200, "", '{"@type":"Apartment"}')],
             }
         )
         scraper = hm.PropyloScraper(session)
-        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13)]
+        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9)]
         known = {"wh_1086675111"}
         normal, silent, deferred = asyncio.run(
-            scraper.screen_listings(
-                cards, lambda lid: None, known.__contains__, check_originals=True
-            )
+            scraper.screen_listings(cards, lambda lid: None, known.__contains__)
         )
         assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8", "pro_9"]
+        assert [c.id for c in silent] == ["pro_1", "pro_2"]
+        assert [c.id for c in deferred] == ["pro_4"]
         # A willhaben house our Willhaben scraper never returned is counted.
         assert scraper.unmatched_origins == {"Willhaben": 1}
-        # Gone originals (expired or reserved on willhaben, a 410 elsewhere) and
-        # ones the original page types as an apartment aren't emailed.
-        assert [c.id for c in silent] == ["pro_1", "pro_2", "pro_10", "pro_11", "pro_12", "pro_13"]
-        assert [c.id for c in deferred] == ["pro_4"]
         # Emails link the original ad; Propylo's own page stays as it is.
         assert normal[0].url == "https://www.immowelt.at/expose/abc"
         assert normal[1].url == "https://www.dibeo.at/expose/555"
         assert normal[2].url == f"{_PRO}8"
         assert session.calls.count(f"{_PRO}4") == _propylo.PROPYLO_RESOLVE_ATTEMPTS
-
-    def test_originals_are_not_opened_after_the_first_pass(self, hm, no_resolve_delay):
-        expired = _WH_HOUSE.format(1086675010)
-        session = _RedirectSession({f"{_PRO}10": [(302, expired)]})  # no route for the ad
-        scraper = hm.PropyloScraper(session)
-        normal, silent, _ = asyncio.run(
-            scraper.screen_listings([_pro_listing(hm, 10)], lambda lid: None, lambda k: False)
-        )
-        assert session.calls == [f"{_PRO}10"]  # the willhaben ad itself is never fetched
-        assert [c.id for c in normal] == ["pro_10"] and silent == []
-        assert scraper.unmatched_origins == {"Willhaben": 1}
+        # Only Propylo's own card URLs are requested, never the original ads.
+        assert all(url.startswith(_PRO) for url in session.calls)
 
     def test_cards_already_in_the_db_are_not_resolved_again(self, hm, no_resolve_delay):
         session = _RedirectSession({})  # any request would raise KeyError
@@ -2372,9 +2337,7 @@ class TestPropyloScreenListings:
 class _ScreeningScraper(_OkScraper):
     """A stand-in aggregator: screen_listings() splits by title."""
 
-    async def screen_listings(self, listings, stored_url, is_known, check_originals=False):
-        self.check_originals_seen = check_originals
-
+    async def screen_listings(self, listings, stored_url, is_known):
         def pick(word):
             return [listing for listing in listings if word in listing.title]
 
@@ -2401,10 +2364,6 @@ class TestScrapeAndNotifyScreening:
         # The deferred card isn't stored; the blacklisted one is.
         assert set(monitor.seen) == {"pro_1", "pro_2", "pro_4"}
         assert failed == [scraper]  # ... and the source is retried the same day
-        assert scraper.check_originals_seen is True  # no Propylo card in the DB yet
-
-        asyncio.run(monitor._scrape_and_notify([scraper]))
-        assert scraper.check_originals_seen is False  # its cards are in the DB now
 
     def test_origin_lookup_ignores_the_aggregators_own_entries(self, hm):
         monitor = _new_monitor(hm)

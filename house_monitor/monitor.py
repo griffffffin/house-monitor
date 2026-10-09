@@ -460,16 +460,10 @@ class HouseMonitor:
                     word.lower() in listing.title.lower() for word in SKIP_NO_PERSIST + BLACKLIST
                 )
             ]
-            own_sources = {listing.source for listing in result}
-            # The very first pass (none of this source's cards in the DB yet)
-            # carries the aggregator's whole backlog, stale ads included: only
-            # then are the original ads opened and checked.
-            first_pass = not any(listing.source in own_sources for listing in self.seen.values())
             normal, silent, deferred = await scraper.screen_listings(
                 to_screen,
                 lambda lid: self.seen[lid].url if lid in self.seen else None,
-                self._origin_lookup(all_listings, own_sources),
-                check_originals=first_pass,
+                self._origin_lookup(all_listings, {listing.source for listing in result}),
             )
             dropped = {id(listing) for listing in silent + deferred}
             all_listings = [listing for listing in all_listings if id(listing) not in dropped]

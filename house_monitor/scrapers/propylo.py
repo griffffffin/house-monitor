@@ -1,6 +1,5 @@
 import asyncio
 import html as _html
-import json
 import logging
 import re
 from datetime import datetime
@@ -23,15 +22,6 @@ from ..fetch import fetch_page
 from ..models import Listing, parse_de_price
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-_NEXT_DATA = re.compile(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
-# How an original ad page says it's gone or what it is.
-_GONE_STATUSES = {404, 410}
-_EXPIRED_REDIRECT_MARKERS = ("fromExpiredAdId", "entityRemoved")
-_TYPE_MARKER = re.compile(
-    r'"(?:@type|realEstateType|objectType|category|propertyType|estateType)"\s*:\s*"([A-Za-z]+)"'
-)
-_APARTMENT_TYPES = {"apartment", "wohnung", "flat", "condominium"}
-_HOUSE_TYPES = {"house", "haus", "singlefamilyresidence"}
 # How the original portals' ad URLs map onto our own DB ids.
 _WILLHABEN_ID = re.compile(r"willhaben\.at/[^?#]*-(\d{6,})/?(?:[?#]|$)")
 _WILLHABEN_AD_ID = re.compile(r"willhaben\.at/.*[?&]adId=(\d+)")
@@ -114,10 +104,7 @@ class PropyloScraper:
     That card URL redirects to the original ad on another portal:
       screen_listings() resolves each NEW card (paced — bursts get HTTP 429),
       keeps houses only, drops copies of ads a scraped portal already has
-      (by the original ad's id); on the very first pass it also checks the
-      remaining originals and drops gone (expired) ones and those the
-      original page types as an apartment; the rest are emailed with the
-      original URL.
+      (by the original ad's id); the rest are emailed with the original URL.
     Pagination: page 1 = the region URL, page N = region URL + "/N", with the
       query string appended AFTER the /N segment; past the last page the server
       returns HTTP 200 with 0 cards (no 404).
@@ -272,59 +259,18 @@ class PropyloScraper:
             return False, None
         return False, None
 
-    async def _check_original(self, url: str) -> Optional[str]:
-        """Look at the original ad itself (no redirect follow). Propylo keeps
-        listing ads for a while after they're gone: on the first full pass 14
-        of 15 unknown willhaben houses had expired (and one was reserved), and
-        ImmoScout24 / immowelt / nachrichten.at originals answered 410.
-        Returns "gone" (404/410, an expiry redirect, or a willhaben ad that
-        isn't active), "apartment" (the page's structured data types it as
-        one — titles often don't say), "live", or None if it can't be told."""
-        try:
-            async with self.session.get(url, allow_redirects=False) as resp:
-                status, location = resp.status, resp.headers.get("Location", "")
-                body = await resp.text() if status == 200 else ""
-        except Exception as e:
-            logging.warning(f"Propylo.com: checking {url} failed: {type(e).__name__}: {e}")
-            return None
-        if status in _GONE_STATUSES:
-            return "gone"
-        if status in _REDIRECT_STATUSES:
-            # willhaben answers an expired ad with a redirect to a search page.
-            expired = "willhaben.at" in url or any(m in location for m in _EXPIRED_REDIRECT_MARKERS)
-            return "gone" if expired else None
-        if status != 200:
-            return None
-        if "willhaben.at" in url:
-            m = _NEXT_DATA.search(body)
-            try:
-                details = json.loads(m.group(1))["props"]["pageProps"]["advertDetails"] if m else {}
-            except (ValueError, KeyError, TypeError):
-                return None
-            ad_status = (details.get("advertStatus") or {}).get("id")
-            if ad_status is None:
-                return None
-            return "live" if ad_status == "active" else "gone"
-        kinds = {kind.lower() for kind in _TYPE_MARKER.findall(body)}
-        if kinds & _APARTMENT_TYPES and not kinds & _HOUSE_TYPES:
-            return "apartment"
-        return "live"
-
     async def screen_listings(
         self,
         listings: List[Listing],
         stored_url: Callable[[str], Optional[str]],
         is_known: Callable[[str], bool],
-        check_originals: bool = False,
     ) -> Tuple[List[Listing], List[Listing], List[Listing]]:
         """Sort this run's cards before the monitor's duplicate check.
         stored_url(listing_id) is the URL kept in the seen-DB (None if the card
         is new); is_known(key) says whether an original ad's origin_key() is
-        already in the DB or in this run; check_originals makes it fetch each
-        remaining candidate's original (_check_original) — the monitor sets it
-        only on the very first pass, when Propylo's whole backlog of stale ads
-        and untitled flats arrives at once; later runs only see the day's
-        fresh cards and don't open the originals (the owner's choice).
+        already in the DB or in this run. The original ads themselves are never
+        opened (the owner's choice), so an ad Propylo still lists after it
+        expired, or a flat whose title doesn't say so, can get through.
         Returns (normal, silent, deferred):
           normal   – the usual new / price-change handling, with the original
                      ad's URL;
@@ -366,17 +312,9 @@ class PropyloScraper:
                 logging.info(f"Propylo.com: copy of {key}, stored silently: {listing.title}")
                 silent.append(listing)
                 continue
-            verdict = await self._check_original(original) if original and check_originals else None
-            if verdict in ("gone", "apartment"):
-                logging.info(
-                    f"Propylo.com: original is {verdict}, stored silently: {listing.title}"
-                )
-                silent.append(listing)
-                continue
             if key and key.startswith("wh_"):
                 # A willhaben house our Willhaben scraper didn't bring.
                 self.unmatched_origins["Willhaben"] = self.unmatched_origins.get("Willhaben", 0) + 1
-            # verdict None (not checked, or couldn't be): rather email it than lose it.
             normal.append(listing)
         if deferred:
             logging.warning(f"Propylo.com: {len(deferred)} new card(s) unresolved, retried later")
