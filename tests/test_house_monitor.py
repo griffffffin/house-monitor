@@ -863,10 +863,10 @@ class TestLystioApiParsing:
                 "pathSegments": ["kaufen", "haus", "steiermark", "leibnitz"],
             },
             {
-                "id": 197128,
+                "id": 197129,
                 "title": "",
-                "projectTitle": "Projekt in 1100 Wien",
-                "rentDisplay": [4500, 69000, False],  # a project card: min is used
+                "projectTitle": "Lager in 1100 Wien",
+                "rentDisplay": [45000, 45000, False],
                 "pathSegments": ["kaufen", "gewerbe", "wien", "favoriten"],
             },
             {"id": 5, "title": "Preis auf Anfrage", "rentDisplay": [None, None, False]},
@@ -884,12 +884,53 @@ class TestLystioApiParsing:
                 28000.0,
             ),
             (
-                "lys_197128",
-                "Projekt in 1100 Wien",
-                "https://lystio.at/kaufen/gewerbe/wien/favoriten/197128",
-                4500.0,
+                "lys_197129",
+                "Lager in 1100 Wien",
+                "https://lystio.at/kaufen/gewerbe/wien/favoriten/197129",
+                45000.0,
             ),
             ("lys_5", "Preis auf Anfrage", "https://lystio.at", 0.0),
+        ]
+
+    def test_project_card_reports_each_matched_unit(self, hm):
+        # The project's own page shows every unit's price ("€7K - 643K"), so the
+        # card's min price must not go out with the project's link — each unit
+        # that matched the search is a listing with its own price and page.
+        data = {
+            "res": [
+                {
+                    "id": 4101,
+                    "title": "Neubauprojekt im Grünen",
+                    "unitType": "multiple",
+                    "rentDisplay": [6500, 8500, False],
+                    "pathSegments": ["kaufen", "wohnung", "wien", "floridsdorf-1210"],
+                    "tenements": [
+                        {
+                            "id": 4102,
+                            "rent": 8500,
+                            "title": "Neubauprojekt im Grünen",
+                            "pathSegments": ["kaufen", "gewerbe", "wien", "floridsdorf-1210"],
+                        },
+                        {"id": 4103, "rent": 6500, "title": ""},
+                    ],
+                },
+            ],
+        }
+        cards = hm.LystioScraper(session=None)._parse_items(data)
+        assert cards == [
+            (
+                "lys_4102",
+                "Neubauprojekt im Grünen",
+                "https://lystio.at/kaufen/gewerbe/wien/floridsdorf-1210/4102",
+                8500.0,
+            ),
+            # Missing unit title / path fall back to the project card's.
+            (
+                "lys_4103",
+                "Neubauprojekt im Grünen",
+                "https://lystio.at/kaufen/wohnung/wien/floridsdorf-1210/4103",
+                6500.0,
+            ),
         ]
 
     def test_pages_until_page_count(self, hm):

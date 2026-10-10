@@ -29,11 +29,16 @@ class LystioScraper:
             shows some apartments, mostly court auctions, which come along),
             the price range is applied by the server, pages are 1-indexed and
             the response's paging.pageCount says when to stop.
-    Item:   id, title (projectTitle as a fallback), rentDisplay = [min, max,
-            …] — the purchase price; min ≠ max only for a project card that
-            groups several units, where min is used — and pathSegments
-            (["kaufen", "haus", "steiermark", "leibnitz"]) for the URL. The
-            per-m² price is a separate field (rentPerDisplay), never read.
+    Item:   id, title (projectTitle as a fallback), rentDisplay[0] = the
+            purchase price, and pathSegments (["kaufen", "haus", "steiermark",
+            "leibnitz"]) for the URL. The per-m² price is a separate field
+            (rentPerDisplay), never read.
+    Project card (unitType "multiple"): a new-build with many units for sale.
+            Its rentDisplay spans only the units that matched the search, but
+            its page shows the whole project (e.g. a 6 500 € parking space on
+            an apartment project whose page reads "€7K – 643K"), so each
+            matched unit in `tenements` (id, rent, title, pathSegments) is
+            reported as its own listing, with its own price and page.
     ID:     lys_<id>; URL: https://lystio.at/<pathSegments…>/<id>
     """
 
@@ -64,18 +69,35 @@ class LystioScraper:
         for item in data.get("res") or []:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
-            raw_id = item["id"]
-            title = (item.get("title") or item.get("projectTitle") or "").strip()
-            title = title or f"Lystio #{raw_id}"
+            title = item.get("title") or item.get("projectTitle")
+            units = item.get("tenements") if item.get("unitType") == "multiple" else None
+            if units:
+                for unit in units:
+                    if isinstance(unit, dict) and unit.get("id"):
+                        results.append(
+                            self._card(
+                                unit["id"],
+                                unit.get("title") or title,
+                                unit.get("rent"),
+                                unit.get("pathSegments") or item.get("pathSegments"),
+                            )
+                        )
+                continue
             display = item.get("rentDisplay") or []
-            try:
-                price = float(display[0] or 0) if display else 0.0
-            except (TypeError, ValueError):
-                price = 0.0
-            path = "/".join(str(segment) for segment in item.get("pathSegments") or [])
-            url = f"{LYSTIO_BASE_URL}/{path}/{raw_id}" if path else LYSTIO_BASE_URL
-            results.append((f"lys_{raw_id}", title, url, price))
+            price = display[0] if display else None
+            results.append(self._card(item["id"], title, price, item.get("pathSegments")))
         return results
+
+    @staticmethod
+    def _card(raw_id, title, price, path_segments) -> tuple:
+        title = (title or "").strip() or f"Lystio #{raw_id}"
+        try:
+            price = float(price or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        path = "/".join(str(segment) for segment in path_segments or [])
+        url = f"{LYSTIO_BASE_URL}/{path}/{raw_id}" if path else LYSTIO_BASE_URL
+        return (f"lys_{raw_id}", title, url, price)
 
     async def fetch_listings(self) -> List[Listing]:
         self.incomplete = False
