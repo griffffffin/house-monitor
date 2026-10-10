@@ -23,6 +23,7 @@ class DerStandardScraper:
     Listing cards: <li class="sc-listing-card ...">
     Link/ID:  <a class="sc-listing-card-content-background-link" href="/detail/XXXXXXXX">
     Title:    <div class="sc-listing-card-title ...">
+    Address:  <span class="property-address"> (zip + city, then the street)
     Price:    <span class="ResultItemPrice-module-scss-module__...">€&nbsp;3.290</span>
               Fallback: <div class="sc-listing-card-footer-item-main">€&nbsp;3.290</div>
     Pagination: &page=2, &page=3 — stop when no listing cards found.
@@ -79,7 +80,11 @@ class DerStandardScraper:
                 # Format: "€ 3.290" or "€ 12.000" — dot = thousands separator
                 price = parse_de_price(price_el.get_text(strip=True))
 
-            results.append((listing_id, title, listing_url, price))
+            # Address (for the SITE_BLACKLIST check): "1220 Wien Street"
+            address = card.find("span", class_="property-address")
+            location = address.get_text(" ", strip=True) if address else ""
+
+            results.append((listing_id, title, listing_url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -111,7 +116,7 @@ class DerStandardScraper:
                     break
 
                 found_on_page = 0
-                for listing_id, title, listing_url, price in page_cards:
+                for listing_id, title, listing_url, price, location in page_cards:
                     if listing_id in seen_ids:
                         continue
                     seen_ids.add(listing_id)
@@ -130,6 +135,7 @@ class DerStandardScraper:
                             source="immobilien.derstandard.at",
                             first_seen=now,
                             last_seen=now,
+                            location=location,
                         )
                     )
                     found_on_page += 1

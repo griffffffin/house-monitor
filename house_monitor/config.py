@@ -19,6 +19,20 @@ BLACKLIST = [
     "waldgrundstück",
 ]
 
+# Sites skipped by their ADDRESS, not their title: (postcode, street) pairs,
+# matched against the address that willhaben, Lystio, ImmoScout24,
+# Immodirekt, Immobilien.net and DerStandard show on their cards
+# (Listing.location) — the postcode as a whole number, the street as a
+# case-insensitive substring. A match is stored silently like a BLACKLIST
+# hit, and copies of it on portals that show no address are hidden as
+# duplicates (same title + price in the same run).
+SITE_BLACKLIST = [
+    # The holiday site at Campingplatzweg, 1220 Wien: the water is shut off
+    # in the whole site from November to March. The street continues into
+    # Gerasdorf (2201), hence the postcode.
+    ("1220", "Campingplatzweg"),
+]
+
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
 # listing becomes available again, we'll still notify about it next run.
 SKIP_NO_PERSIST = [

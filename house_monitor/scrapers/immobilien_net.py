@@ -59,7 +59,11 @@ class ImmobIlienNetScraper:
             if h4:
                 price = parse_de_price(h4.get_text(strip=True))
 
-            results.append((listing_id, title, listing_url, price))
+            # Address (for the SITE_BLACKLIST check): "Street, 1220 Wien"
+            address = card.find("p", class_="lbEw0")
+            location = address.get_text(" ", strip=True) if address else ""
+
+            results.append((listing_id, title, listing_url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -91,7 +95,7 @@ class ImmobIlienNetScraper:
                 if not page_cards:
                     break
 
-                for listing_id, title, listing_url, price in page_cards:
+                for listing_id, title, listing_url, price, location in page_cards:
                     if listing_id in seen_ids:
                         continue
                     seen_ids.add(listing_id)
@@ -110,6 +114,7 @@ class ImmobIlienNetScraper:
                             source="immobilien.net",
                             first_seen=now,
                             last_seen=now,
+                            location=location,
                         )
                     )
 

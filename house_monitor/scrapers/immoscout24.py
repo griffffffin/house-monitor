@@ -54,7 +54,11 @@ class ImmoScout24Scraper:
                         price = parsed
                         break
 
-            results.append((listing_id, title, url, price))
+            # Address (for the SITE_BLACKLIST check): "Street, 1220 Wien"
+            address = item.find("address")
+            location = address.get_text(" ", strip=True) if address else ""
+
+            results.append((listing_id, title, url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -79,7 +83,7 @@ class ImmoScout24Scraper:
 
                     logging.info(f"ImmoScout24: {len(page_cards)} elements on page {page}.")
 
-                    for listing_id, title, url, price in page_cards:
+                    for listing_id, title, url, price, location in page_cards:
                         if price > 0:
                             now = datetime.now().isoformat()
                             results.append(
@@ -91,6 +95,7 @@ class ImmoScout24Scraper:
                                     source="ImmoScout24",
                                     first_seen=now,
                                     last_seen=now,
+                                    location=location,
                                 )
                             )
 

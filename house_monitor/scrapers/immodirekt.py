@@ -24,6 +24,7 @@ class ImmodirektScraper:
     Pagination: ?page=N appended to the base URL.
     Card:  <section class="_98L38">
     Title: <h2 class="_2jNcY">
+    Address: <p class="_1FDvH"><span>1220</span><span>Wien</span><span>, Street</span></p>
     Price: <div class="_1-CSS"> containing <span class="_1xxDl">Kaufpreis...</span>
              -> <span class="_2Pe1d">48.500,00</span>
     URL/ID: <a href="/immobilie/PLZ-ORT/slug-HEXID/"> - the ID is the 24-char hex slug
@@ -77,7 +78,11 @@ class ImmodirektScraper:
                             price = parsed
                             break  # found the real price
 
-            results.append((listing_id, title, listing_url, price))
+            # Address (for the SITE_BLACKLIST check): "1220 Wien, Street"
+            address = card.find("p", class_="_1FDvH")
+            location = re.sub(r"\s+,", ",", address.get_text(" ", strip=True)) if address else ""
+
+            results.append((listing_id, title, listing_url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -106,7 +111,7 @@ class ImmodirektScraper:
                         break
 
                     found_on_page = 0
-                    for listing_id, title, listing_url, price in page_cards:
+                    for listing_id, title, listing_url, price, location in page_cards:
                         if listing_id in seen_ids:
                             continue
                         seen_ids.add(listing_id)
@@ -128,6 +133,7 @@ class ImmodirektScraper:
                                 source="immodirekt.at",
                                 first_seen=now,
                                 last_seen=now,
+                                location=location,
                             )
                         )
                         found_on_page += 1

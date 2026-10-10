@@ -18,6 +18,9 @@ class Listing:
     last_seen: str
     price_changed: bool = False
     old_price: float = 0.0
+    # The card's address text (postcode, town, street) where the source shows
+    # one — only read by the SITE_BLACKLIST check, not stored in the seen-DB.
+    location: str = ""
 
 
 def parse_de_price(text: str) -> float:

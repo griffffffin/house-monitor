@@ -32,7 +32,8 @@ class LystioScraper:
     Item:   id, title (projectTitle as a fallback), rentDisplay[0] = the
             purchase price, and pathSegments (["kaufen", "haus", "steiermark",
             "leibnitz"]) for the URL. The per-m² price is a separate field
-            (rentPerDisplay), never read.
+            (rentPerDisplay), never read. zip, city and address (the street)
+            feed the SITE_BLACKLIST check.
     Project card (unitType "multiple"): a new-build with many units for sale.
             Its rentDisplay spans only the units that matched the search, but
             its page shows the whole project (e.g. a 6 500 € parking space on
@@ -70,6 +71,10 @@ class LystioScraper:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             title = item.get("title") or item.get("projectTitle")
+            town = " ".join(str(item.get(key) or "").strip() for key in ("zip", "city")).strip()
+            location = ", ".join(
+                part for part in (town, str(item.get("address") or "").strip()) if part
+            )
             units = item.get("tenements") if item.get("unitType") == "multiple" else None
             if units:
                 for unit in units:
@@ -80,16 +85,17 @@ class LystioScraper:
                                 unit.get("title") or title,
                                 unit.get("rent"),
                                 unit.get("pathSegments") or item.get("pathSegments"),
+                                location,
                             )
                         )
                 continue
             display = item.get("rentDisplay") or []
             price = display[0] if display else None
-            results.append(self._card(item["id"], title, price, item.get("pathSegments")))
+            results.append(self._card(item["id"], title, price, item.get("pathSegments"), location))
         return results
 
     @staticmethod
-    def _card(raw_id, title, price, path_segments) -> tuple:
+    def _card(raw_id, title, price, path_segments, location="") -> tuple:
         title = (title or "").strip() or f"Lystio #{raw_id}"
         try:
             price = float(price or 0)
@@ -97,7 +103,7 @@ class LystioScraper:
             price = 0.0
         path = "/".join(str(segment) for segment in path_segments or [])
         url = f"{LYSTIO_BASE_URL}/{path}/{raw_id}" if path else LYSTIO_BASE_URL
-        return (f"lys_{raw_id}", title, url, price)
+        return (f"lys_{raw_id}", title, url, price, location)
 
     async def fetch_listings(self) -> List[Listing]:
         self.incomplete = False
@@ -124,7 +130,7 @@ class LystioScraper:
                 # cardCount, not totalCount: a project card groups several units.
                 reported = int((data.get("paging") or {}).get("cardCount") or 0)
             received += len(data.get("res") or [])
-            for listing_id, title, url, price in page_cards:
+            for listing_id, title, url, price, location in page_cards:
                 if listing_id in seen_ids:
                     continue
                 seen_ids.add(listing_id)
@@ -144,6 +150,7 @@ class LystioScraper:
                         source="lystio.at",
                         first_seen=now,
                         last_seen=now,
+                        location=location,
                     )
                 )
             page_count = (data.get("paging") or {}).get("pageCount") or 0

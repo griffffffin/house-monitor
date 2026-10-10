@@ -25,6 +25,7 @@ from .config import (
     HEALTH_UNMATCHED_MIN,
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
+    SITE_BLACKLIST,
     SKIP_NO_PERSIST,
     TITLE_SUBSTRING_MIN_LEN,
 )
@@ -206,6 +207,7 @@ class HouseMonitor:
                 d = asdict(listing)
                 d.pop("price_changed", None)
                 d.pop("old_price", None)
+                d.pop("location", None)
                 to_save[lid] = d
 
             # Atomic write: write to a temp file first, then rename it to the
@@ -280,6 +282,19 @@ class HouseMonitor:
 
         m = _re.search(r"(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])", (listing.url or "").lower())
         return m.group(0) if m else None
+
+    def _at_blacklisted_site(self, listing: Listing) -> bool:
+        """Whether the card's address names a SITE_BLACKLIST site: its
+        postcode as a whole number and its street, case-insensitively. Cards
+        without an address (most sources) never match."""
+        import re as _re
+
+        location = listing.location.lower()
+        return any(
+            _re.search(rf"(?<!\d){_re.escape(postcode)}(?!\d)", location)
+            and street.lower() in location
+            for postcode, street in SITE_BLACKLIST
+        )
 
     def _origin_lookup(
         self, run_listings: List[Listing], own_sources: set
@@ -478,6 +493,10 @@ class HouseMonitor:
             for portal, count in getattr(scraper, "unmatched_origins", {}).items():
                 self.day_unmatched[portal] = self.day_unmatched.get(portal, 0) + count
 
+        # A blacklisted site's ads on portals that show no address are caught
+        # as duplicates of this run's copies that do (same title + price).
+        site_hidden = [listing for listing in all_listings if self._at_blacklisted_site(listing)]
+
         for listing in all_listings:
             title_lower = listing.title.lower()
 
@@ -487,9 +506,11 @@ class HouseMonitor:
                 logging.info(f"Temporary skip (no-persist): {listing.title}")
                 continue
 
-            if any(word.lower() in title_lower for word in BLACKLIST):
+            at_site = self._at_blacklisted_site(listing)
+            if at_site or any(word.lower() in title_lower for word in BLACKLIST):
                 if listing.id not in self.seen:
-                    logging.info(f"Blacklisted listing hidden: {listing.title}")
+                    where = f" ({listing.location})" if at_site else ""
+                    logging.info(f"Blacklisted listing hidden: {listing.title}{where}")
                     self.seen[listing.id] = listing
                     db_changed = True
                 continue
@@ -505,7 +526,7 @@ class HouseMonitor:
                     # listings that went out).
                     listing.first_seen = existing.first_seen
                     # Also filter cross-platform duplicates on price drops
-                    if self._already_seen_elsewhere(listing, also_check=to_notify):
+                    if self._already_seen_elsewhere(listing, also_check=to_notify + site_hidden):
                         logging.info(
                             f"Price-drop duplicate hidden: {listing.title} ({listing.price}€)"
                         )
@@ -524,7 +545,7 @@ class HouseMonitor:
                         db_changed = True
                         continue
 
-                if self._already_seen_elsewhere(listing, also_check=to_notify):
+                if self._already_seen_elsewhere(listing, also_check=to_notify + site_hidden):
                     logging.info(
                         f"Cross-platform duplicate hidden: {listing.title} ({listing.price}€)"
                     )

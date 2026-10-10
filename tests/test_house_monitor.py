@@ -641,6 +641,7 @@ class TestImmobilienNetCardParsing:
         <h2 class="_3r8AR">Sch&ouml;nes Haus in Graz</h2>
         <h4 class="D1pOB">45.000 €</h4>
       </a>
+      <p class="lbEw0">Testgasse, 8010 Graz</p>
     </li>
     """
 
@@ -648,11 +649,12 @@ class TestImmobilienNetCardParsing:
         scraper = hm.ImmobIlienNetScraper(session=None)
         cards = scraper._parse_cards(self.HTML)
         assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
+        listing_id, title, url, price, location = cards[0]
         assert listing_id == "inet_haus-graz-abc123"
         assert title == "Schönes Haus in Graz"
         assert url == "https://www.immobilien.net/immobilie/haus-graz-abc123/"
         assert price == 45000.0
+        assert location == "Testgasse, 8010 Graz"
 
 
 class TestImmokralleCardParsing:
@@ -857,6 +859,9 @@ class TestLystioApiParsing:
             {
                 "id": 299151,
                 "title": "Ferienhaus am Sulmsee",
+                "zip": "8430",
+                "city": "Leibnitz",
+                "address": "Testgasse ",
                 "rentDisplay": [28000, 28000, False],
                 # The per-m² figure must never be read as the price.
                 "rentPerDisplay": [933.33, 933.33, True],
@@ -882,14 +887,16 @@ class TestLystioApiParsing:
                 "Ferienhaus am Sulmsee",
                 "https://lystio.at/kaufen/haus/steiermark/leibnitz/299151",
                 28000.0,
+                "8430 Leibnitz, Testgasse",
             ),
             (
                 "lys_197129",
                 "Lager in 1100 Wien",
                 "https://lystio.at/kaufen/gewerbe/wien/favoriten/197129",
                 45000.0,
+                "",
             ),
-            ("lys_5", "Preis auf Anfrage", "https://lystio.at", 0.0),
+            ("lys_5", "Preis auf Anfrage", "https://lystio.at", 0.0, ""),
         ]
 
     def test_project_card_reports_each_matched_unit(self, hm):
@@ -902,6 +909,8 @@ class TestLystioApiParsing:
                     "id": 4101,
                     "title": "Neubauprojekt im Grünen",
                     "unitType": "multiple",
+                    "zip": "1210",
+                    "city": "Wien",
                     "rentDisplay": [6500, 8500, False],
                     "pathSegments": ["kaufen", "wohnung", "wien", "floridsdorf-1210"],
                     "tenements": [
@@ -923,13 +932,16 @@ class TestLystioApiParsing:
                 "Neubauprojekt im Grünen",
                 "https://lystio.at/kaufen/gewerbe/wien/floridsdorf-1210/4102",
                 8500.0,
+                "1210 Wien",
             ),
-            # Missing unit title / path fall back to the project card's.
+            # Missing unit title / path fall back to the project card's; the
+            # units share the project's address.
             (
                 "lys_4103",
                 "Neubauprojekt im Grünen",
                 "https://lystio.at/kaufen/wohnung/wien/floridsdorf-1210/4103",
                 6500.0,
+                "1210 Wien",
             ),
         ]
 
@@ -1014,6 +1026,7 @@ class TestImmoScout24CardParsing:
       <li>
         <a href="/expose/12345678">
           <h2>Nice house</h2>
+          <address class="Address-address-N8V">Testgasse, 8010 Graz</address>
           <ul class="PriceKeyFacts">
             <li>65.000 €</li>
           </ul>
@@ -1026,11 +1039,12 @@ class TestImmoScout24CardParsing:
         scraper = hm.ImmoScout24Scraper(session=None)
         cards = scraper._parse_cards(self.HTML)
         assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
+        listing_id, title, url, price, location = cards[0]
         assert listing_id == "is24_12345678"
         assert title == "Nice house"
         assert url == "https://www.immobilienscout24.at/expose/12345678"
         assert price == 65000
+        assert location == "Testgasse, 8010 Graz"
 
     # The markup since the ~2026-08 redesign (trimmed from a live page): the
     # price facts are <li class="PriceKeyFact-…"> with no "PriceKeyFacts" <ul>.
@@ -1175,6 +1189,8 @@ class TestDerStandardCardParsing:
     <li class="sc-listing-card">
       <a class="sc-listing-card-content-background-link" href="/detail/12345678"></a>
       <div class="sc-listing-card-title">Haus in Villach</div>
+      <span class="property-address"><span class="property-address-zip-city">9500 Villach</span>
+        <span class="property-address-rest">Testgasse</span></span>
       <span class="ResultItemPrice-module-scss-module__abc">€ 189.000</span>
     </li>
     """
@@ -1183,11 +1199,12 @@ class TestDerStandardCardParsing:
         scraper = hm.DerStandardScraper(session=None)
         cards = scraper._parse_cards(self.HTML)
         assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
+        listing_id, title, url, price, location = cards[0]
         assert listing_id == "ds_12345678"
         assert title == "Haus in Villach"
         assert url == "https://immobilien.derstandard.at/detail/12345678"
         assert price == 189000.0
+        assert location == "9500 Villach Testgasse"
 
 
 class TestRaiffeisenCardParsing:
@@ -1316,6 +1333,7 @@ class TestImmodirektCardParsing:
       <a href="/immobilie/8010-graz/haus-mit-garten-abcdef0123456789abcdef01/">
         <h2 class="_2jNcY">Haus mit Garten</h2>
       </a>
+      <p class="_1FDvH"><span>8010<!-- --></span><span>Graz</span><span>,<!-- --> Testgasse</span></p>
       <div class="_1-CSS">
         <span class="_1xxDl">Kaufpreis</span>
         <span class="_2Pe1d">185.000,00</span>
@@ -1327,7 +1345,7 @@ class TestImmodirektCardParsing:
         scraper = hm.ImmodirektScraper(session=None)
         cards = scraper._parse_cards(self.HTML)
         assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
+        listing_id, title, url, price, location = cards[0]
         assert listing_id == "imd_abcdef0123456789abcdef01"
         assert title == "Haus mit Garten"
         assert (
@@ -1335,6 +1353,7 @@ class TestImmodirektCardParsing:
             == "https://www.immodirekt.at/immobilie/8010-graz/haus-mit-garten-abcdef0123456789abcdef01/"
         )
         assert price == 185000.0
+        assert location == "8010 Graz, Testgasse"
 
 
 class TestImmobilienDeApiParsing:
@@ -1452,6 +1471,9 @@ class TestWillhabenJsonAdvertParsing:
                             "values": ["/iad/immobilien/d/haus-kaufen/wien/haus-123456789/"],
                         },
                         {"name": "PRICE", "values": ["45000"]},
+                        {"name": "POSTCODE", "values": ["1220"]},
+                        {"name": "LOCATION", "values": ["Wien, 22. Bezirk, Donaustadt"]},
+                        {"name": "ADDRESS", "values": ["Testgasse"]},
                     ]
                 },
             }
@@ -1459,11 +1481,12 @@ class TestWillhabenJsonAdvertParsing:
         scraper = hm.WillhabenScraper(session=None)
         results = scraper._parse_json_adverts(adverts)
         assert len(results) == 1
-        listing_id, title, url, price = results[0]
+        listing_id, title, url, price, location = results[0]
         assert listing_id == "wh_123456789"
         assert title == "Charmantes Haus"
         assert url == "https://www.willhaben.at/iad/immobilien/d/haus-kaufen/wien/haus-123456789/"
         assert price == 45000.0
+        assert location == "1220 Wien, 22. Bezirk, Donaustadt, Testgasse"
 
     @staticmethod
     def _advert(price, display, area):
@@ -1523,11 +1546,12 @@ class TestWillhabenHtmlFallbackParsing:
         scraper = hm.WillhabenScraper(session=None)
         cards = scraper._parse_html_fallback_cards(self.HTML)
         assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
+        listing_id, title, url, price, location = cards[0]
         assert listing_id == "wh_123456789"
         assert title == "Haus in Wien"
         assert url == "https://www.willhaben.at/iad/object/123456789"
         assert price == 65000.0
+        assert location == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1554,6 +1578,56 @@ def test_blacklist_catches_forest_plots_but_not_houses_on_a_plot(hm):
     assert blacklisted("WALDGRUNDSTÜCKE in ruhiger Lage")
     assert not blacklisted("Kleines Haus mit großem Grundstück")
     assert not blacklisted("Mobilheim auf Pachtgrundstück am See")
+
+
+def test_site_blacklist_entries_are_postcode_street_pairs(hm):
+    for postcode, street in hm.SITE_BLACKLIST:
+        assert postcode.isdigit() and len(postcode) == 4
+        assert street and street == street.strip()
+
+
+class TestSiteBlacklist:
+    @staticmethod
+    def _at_site(hm, location):
+        listing = TestScrapeAndNotifyRetryCollection._listing(hm, "x_1", "Haus", 30000.0)
+        listing.location = location
+        return _new_monitor(hm)._at_blacklisted_site(listing)
+
+    def test_matches_every_sources_address_format(self, hm, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        for location in (
+            "9999 Musterstadt, 22. Bezirk, Musterweg",  # willhaben
+            "9999 Musterstadt, Musterweg",  # Lystio, Immodirekt
+            "Musterweg, 9999 Musterstadt",  # ImmoScout24, Immobilien.net
+            "9999 Musterstadt MUSTERWEG 5",  # DerStandard
+        ):
+            assert self._at_site(hm, location), location
+
+    def test_needs_both_the_postcode_and_the_street(self, hm, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        assert not self._at_site(hm, "Musterweg, 8888 Nachbarort")  # same street, other town
+        assert not self._at_site(hm, "9999 Musterstadt, Testgasse")  # same town, other street
+        assert not self._at_site(hm, "Musterweg, 99990 Anderswo")  # postcode as a whole number
+        assert not self._at_site(hm, "")  # sources that show no address
+
+    def test_site_ads_and_their_addressless_copies_stay_silent(self, hm, tmp_path, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
+        make = TestScrapeAndNotifyRetryCollection._listing
+        at_site = make(hm, "wh_1", "Ferienhaus am Teich", 30000.0, source="willhaben.at")
+        at_site.location = "9999 Musterstadt, Musterweg"
+        copy = make(hm, "fh_1", "Ferienhaus am Teich", 30000.0)  # this portal shows no address
+        other = make(hm, "fh_2", "Haus am Waldrand", 30000.0)
+        monitor = _new_monitor(hm)
+        monitor.notifier = _StubNotifier()
+        # The address-less copy comes first: the order of the sources must not matter.
+        asyncio.run(monitor._scrape_and_notify([_OkScraper([copy, other]), _OkScraper([at_site])]))
+        body = monitor.notifier.sent[0][1]
+        assert "Haus am Waldrand" in body and "Ferienhaus am Teich" not in body
+        assert set(monitor.seen) == {"wh_1", "fh_1", "fh_2"}
+        # The address only feeds the check — the seen-DB format is unchanged.
+        saved = json.loads((tmp_path / "seen.json").read_text(encoding="utf-8"))
+        assert "location" not in saved["wh_1"]
 
 
 def test_all_scrapers_are_constructible(hm):

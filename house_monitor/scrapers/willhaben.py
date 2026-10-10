@@ -31,6 +31,9 @@ class WillhabenScraper:
       - description: title
       - advertStatus.statusId: "active" / "inactive" etc.
       - attributes.attribute[]: [{name:"PRICE", values:["39000"]}, {name:"URL_SLUG",...}]
+        — also POSTCODE, LOCATION ("Wien, 22. Bezirk, Donaustadt") and
+        ADDRESS (the street, when the advertiser gives one) for the
+        SITE_BLACKLIST check.
     """
 
     def __init__(self, session: aiohttp.ClientSession):
@@ -84,7 +87,8 @@ class WillhabenScraper:
             if price_el:
                 price = parse_de_price(price_el.get_text(strip=True))
 
-            results.append((listing_id, title, listing_url, price))
+            # The DOM card carries no reliable address — no SITE_BLACKLIST check.
+            results.append((listing_id, title, listing_url, price, ""))
         return results
 
     def _search_result(self, html: str) -> dict:
@@ -169,7 +173,19 @@ class WillhabenScraper:
                 logging.info(f"Willhaben.at: excluded per-m² price '{display}': id={raw_id}")
                 continue
 
-            results.append((listing_id, title, listing_url, price))
+            town = " ".join(
+                part
+                for part in (
+                    self._extract_attr(attrs, "POSTCODE"),
+                    self._extract_attr(attrs, "LOCATION"),
+                )
+                if part
+            )
+            location = ", ".join(
+                part for part in (town, self._extract_attr(attrs, "ADDRESS")) if part
+            )
+
+            results.append((listing_id, title, listing_url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -208,7 +224,7 @@ class WillhabenScraper:
                             break
                         # HTML DOM processing
                         found_on_page = 0
-                        for listing_id, title, listing_url, price in page_cards:
+                        for listing_id, title, listing_url, price, location in page_cards:
                             if listing_id in seen_ids:
                                 continue
                             seen_ids.add(listing_id)
@@ -224,6 +240,7 @@ class WillhabenScraper:
                                     source="willhaben.at",
                                     first_seen=now,
                                     last_seen=now,
+                                    location=location,
                                 )
                             )
                             found_on_page += 1
@@ -236,7 +253,9 @@ class WillhabenScraper:
 
                     # --- __NEXT_DATA__ processing ---
                     found_on_page = 0
-                    for listing_id, title, listing_url, price in self._parse_json_adverts(adverts):
+                    for listing_id, title, listing_url, price, location in self._parse_json_adverts(
+                        adverts
+                    ):
                         if listing_id in seen_ids:
                             continue
                         seen_ids.add(listing_id)
@@ -255,6 +274,7 @@ class WillhabenScraper:
                                 source="willhaben.at",
                                 first_seen=now,
                                 last_seen=now,
+                                location=location,
                             )
                         )
                         found_on_page += 1
