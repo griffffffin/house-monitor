@@ -175,6 +175,36 @@ class TestTitleSimilarity:
         assert monitor._titles_similar("Kein Hauptwohnsitz", "Kein Hauptwohnsitz!")
         assert monitor._titles_similar("Wohn- oder Freizeitdomizil", "WOHN- ODER FREIZEITDOMIZIL?")
 
+    def test_plus_and_star_decoration_is_ignored(self, hm):
+        # Immokralle and Findheim strip the decoration other portals keep.
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar(
+            "+ TOP + Ferienhaus am See mit Garten", "TOP Ferienhaus am See mit Garten"
+        )
+        assert monitor._titles_similar(
+            "*** Neu renoviert *** Haus mit Garten", "Neu renoviert  Haus mit Garten"
+        )
+
+    def test_euro_sign_matches_eur(self, hm):
+        # Willhaben writes "EUR" where the other portals keep "€".
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar(
+            "Ferienhaus am See um nur EUR 24.500,-", "Ferienhaus am See um nur € 24.500,-"
+        )
+        assert monitor._titles_similar(
+            "Haus mit Garten um 24.500 EUR", "Haus mit Garten um 24.500€"
+        )
+
+    def test_decorated_eur_title_matches_truncated_immokralle_copy(self, hm):
+        # Regression (2026-10-10): a price drop went out twice — Willhaben's
+        # "+ … + … um nur EUR 24.500,-" and Immokralle's bare copy, cut off
+        # after "€ 24", didn't match.
+        monitor = _new_monitor(hm)
+        assert monitor._titles_similar(
+            "+ TOP + Ferienhaus am See - ruhige Lage um nur EUR 24.500,-",
+            "TOP Ferienhaus am See - ruhige Lage um nur € 24",
+        )
+
     def test_substring_must_end_on_a_word_boundary(self, hm):
         monitor = _new_monitor(hm)
         assert not monitor._titles_similar("Tiefgaragenplatz Nr. 4", "Tiefgaragenplatz Nr. 42")

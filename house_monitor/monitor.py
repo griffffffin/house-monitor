@@ -252,6 +252,11 @@ class HouseMonitor:
             # listing ("Kein Hauptwohnsitz" vs "Kein Hauptwohnsitz!"); drop it
             # so those still compare equal under the exact-match rule below.
             s = s.replace("!", "").replace("?", "")
+            # Decoration likewise: "+ NEU + Ferienhaus" / "*** TOP *** Haus"
+            # on one portal, bare on Immokralle and Findheim, which strip it.
+            s = s.replace("+", " ").replace("*", " ")
+            # Willhaben writes "um nur EUR 24.500" where the others keep "€".
+            s = s.replace("€", " eur ")
             s = _re.sub(r"\s+", " ", s)
             return s.strip(" .,;:")
 
