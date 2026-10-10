@@ -675,6 +675,13 @@ class TestImmokralleCardParsing:
         assert title == "Haus am Land"
         assert price == 33500.0
 
+    def test_repairs_the_euro_entity_missing_its_hash(self, hm):
+        # The page carries "&amp;8364;" — "&8364;" after parsing — for "€".
+        html = self.HTML.replace("Haus am Land", "Haus am Land um nur &amp;8364; 33.500")
+        scraper = hm.ImmokralleScraper(session=None)
+        _uid, title, _url, _price = scraper._parse_cards(html)[0]
+        assert title == "Haus am Land um nur € 33.500"
+
 
 class TestImmoLive24CardParsing:
     HTML = """

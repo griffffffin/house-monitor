@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import urllib.request
 from datetime import datetime
 from typing import List
@@ -59,7 +60,14 @@ class ImmokralleScraper:
             if not listing_url or listing_url.startswith("javascript"):
                 continue
             h2 = card.find("h2")
-            title = _html.unescape(h2.get_text(strip=True)) if h2 else f"Immokralle #{uid}"
+            # The feed escapes a numeric entity that has lost its "#"
+            # ("&amp;8364;" in the page, i.e. "&8364;" for "€"); restore the
+            # "#" so unescape turns it into the character.
+            title = (
+                _html.unescape(re.sub(r"&(\d+);", r"&#\1;", h2.get_text(strip=True)))
+                if h2
+                else f"Immokralle #{uid}"
+            )
             price = 0.0
             price_div = card.find("div", class_="price")
             if price_div:
