@@ -1545,6 +1545,17 @@ def test_blacklist_catches_both_spellings_of_presshaus(hm):
         assert any(word.lower() in title.lower() for word in hm.BLACKLIST), title
 
 
+def test_blacklist_catches_forest_plots_but_not_houses_on_a_plot(hm):
+    # House ads name their plot too, so plain "Grundstück" must not be blacklisted.
+    def blacklisted(title):
+        return any(word.lower() in title.lower() for word in hm.BLACKLIST)
+
+    assert blacklisted("Waldgrundstück im Mühlviertel, ca. 5.000 m²")
+    assert blacklisted("WALDGRUNDSTÜCKE in ruhiger Lage")
+    assert not blacklisted("Kleines Haus mit großem Grundstück")
+    assert not blacklisted("Mobilheim auf Pachtgrundstück am See")
+
+
 def test_all_scrapers_are_constructible(hm):
     """Regression smoke test: every scraper class must be constructible with
     a session. If someone breaks an __init__, this catches it."""

@@ -16,6 +16,7 @@ BLACKLIST = [
     "in Ungarn",
     "presshaus",
     "preßhaus",
+    "waldgrundstück",
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
