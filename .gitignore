@@ -26,6 +26,7 @@ health-check-state.json
 ~$*
 .~lock.*#
 backup/
+dossiers/
 
 # Secrets — must never end up in the repo
 .env
