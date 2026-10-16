@@ -1556,6 +1556,16 @@ def test_blacklist_catches_forest_plots_but_not_houses_on_a_plot(hm):
     assert not blacklisted("Mobilheim auf Pachtgrundstück am See")
 
 
+def test_blacklist_catches_west_hungary(hm):
+    # "in Ungarn" can't match these: "Westungarn" is one word.
+    def blacklisted(title):
+        return any(word.lower() in title.lower() for word in hm.BLACKLIST)
+
+    assert blacklisted("Bauernhaus in Westungarn mit großem Garten")
+    assert blacklisted("LANDHAUS IN WESTUNGARN – 2.000 m² Grundstück")
+    assert not blacklisted("Kleines Haus im Westen von Wien")
+
+
 def test_site_blacklist_entries_are_postcode_street_pairs(hm):
     for postcode, street in hm.SITE_BLACKLIST:
         assert postcode.isdigit() and len(postcode) == 4

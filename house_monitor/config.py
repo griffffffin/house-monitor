@@ -14,6 +14,7 @@ BLACKLIST = [
     "weinkeller",
     "Erdkeller",
     "in Ungarn",
+    "in Westungarn",
     "presshaus",
     "preßhaus",
     "waldgrundstück",
