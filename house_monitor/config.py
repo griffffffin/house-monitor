@@ -160,35 +160,6 @@ SONNBERGER_BASE_URL = "https://sonnberger.co.at"
 # happens entirely client-side (the site only sorts ascending by price).
 SONNBERGER_URL = f"{SONNBERGER_BASE_URL}/wp/immobilienart/haeuser/?sortby=a_price"
 
-# used by: PropyloScraper
-PROPYLO_BASE_URL = "https://at.propylo.com"
-# Aggregator, sales only (rentals live on the sister site at.flatspotter.com).
-# There's no country-wide listing page — listings are grouped per Bundesland, so
-# these 9 state pages together cover all of Austria. The site DOES honor a
-# server-side price filter + ascending-price sort via query params, so we push
-# the price range down to the server. Pagination is a trailing /N path segment
-# placed BEFORE the query string (page 1 has no suffix).
-_PROPYLO_REGIONS = [
-    "burgenland",
-    "karnten",
-    "niederosterreich",
-    "oberosterreich",
-    "land-salzburg",
-    "steiermark",
-    "tirol",
-    "vorarlberg",
-    "wien",
-]
-PROPYLO_QUERY = f"?price_min={EUR_PRICE_FROM}&price_max={EUR_PRICE_TO}&ordering=price_asc"
-PROPYLO_URLS = [f"{PROPYLO_BASE_URL}/immobilien/{r}" for r in _PROPYLO_REGIONS]
-# Each Propylo card links to /verkaufsimmobilie/<id>, which redirects to the
-# original ad on another portal. New cards are resolved one at a time, this
-# many seconds apart (the site answers bursts with HTTP 429); a 429 is
-# retried after PROPYLO_RESOLVE_BACKOFF × attempt seconds.
-PROPYLO_RESOLVE_DELAY = 1.5
-PROPYLO_RESOLVE_ATTEMPTS = 4
-PROPYLO_RESOLVE_BACKOFF = 10.0
-
 # used by: LystioScraper
 LYSTIO_BASE_URL = "https://lystio.at"
 LYSTIO_API_URL = "https://api.lystio.at/tenement/search"
@@ -334,9 +305,6 @@ HEALTH_DROP_MIN_HISTORY = 7
 # Sources whose site reports its own total: fewer items received than this
 # share of it means pages went missing.
 HEALTH_COVERAGE_MIN_RATIO = 0.8
-# Propylo cross-check: this many in-range houses resolved to a willhaben ad
-# that our Willhaben scraper never returned, in one day.
-HEALTH_UNMATCHED_MIN = 2
 
 # Probe targets: page 1 of each source's search WITHOUT the price range.
 # The real search URLs carry 3000-70000 € server-side, so a working site can
@@ -391,4 +359,3 @@ DINGDONG_PROBE_URL = (
     "?field_inserent_value=All&field_kategorie_tid=5&field_miete_kauf_value=kauf"
     "&order=field_preis&sort=asc"
 )
-PROPYLO_PROBE_URL = f"{PROPYLO_BASE_URL}/immobilien/niederosterreich?ordering=price_asc"

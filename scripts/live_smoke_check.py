@@ -54,7 +54,6 @@ from house_monitor.scrapers import (
     ImmoScout24Scraper,
     LystioScraper,
     OhneMaklerScraper,
-    PropyloScraper,
     RaiffeisenScraper,
     SonnbergerScraper,
     WillhabenScraper,
@@ -113,7 +112,6 @@ async def main():
             DingDongScraper(session),
             SonnbergerScraper(session),
             HegerRealScraper(session),
-            PropyloScraper(session),
             LystioScraper(session),
         ]
 

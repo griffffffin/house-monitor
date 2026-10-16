@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import aiofiles
 import aiohttp
@@ -22,7 +22,6 @@ from .config import (
     EUR_PRICE_TO,
     HEALTH_MIN_CONSECUTIVE,
     HEALTH_STATE_FILE,
-    HEALTH_UNMATCHED_MIN,
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SITE_BLACKLIST,
@@ -55,7 +54,6 @@ from .scrapers import (
     ImmoScout24Scraper,
     LystioScraper,
     OhneMaklerScraper,
-    PropyloScraper,
     RaiffeisenScraper,
     SonnbergerScraper,
     WillhabenScraper,
@@ -87,7 +85,6 @@ SCRAPER_SUMMARY_LABELS = {
     "DingDongScraper": ("DingDong", "ads"),
     "SonnbergerScraper": ("Sonnberger", "ads"),
     "HegerRealScraper": ("HegerReal", "listings"),
-    "PropyloScraper": ("Propylo", "listings"),
     "LystioScraper": ("Lystio", "listings"),
 }
 
@@ -116,7 +113,6 @@ SOURCE_DISPLAY_NAMES = {
     "ding-dong.at": "DingDong",
     "sonnberger.co.at": "Sonnberger",
     "hegerreal.at": "HegerReal",
-    "at.propylo.com": "Propylo",
     "lystio.at": "Lystio",
 }
 
@@ -135,10 +131,8 @@ class HouseMonitor:
         self.today_errors: Dict[str, str] = {}
         # Whether the last _scrape_and_notify() email went out.
         self.last_email_ok = True
-        # Today's Propylo cross-check (portal -> in-range houses our own
-        # scraper of it never returned) and the sources that only came
-        # through the same-day retry — both for the end-of-day check.
-        self.day_unmatched: Dict[str, int] = {}
+        # The sources that only came through the same-day retry today —
+        # for the end-of-day check.
         self.day_late: List[Any] = []
 
     def _setup_logging(self):
@@ -301,22 +295,6 @@ class HouseMonitor:
             for postcode, street in SITE_BLACKLIST
         )
 
-    def _origin_lookup(
-        self, run_listings: List[Listing], own_sources: set
-    ) -> Callable[[str], bool]:
-        """is_known(key) for an aggregator's screen_listings(): whether an
-        original ad's key — a DB id (wh_123) or an ImmoScout24-family expose
-        id — belongs to an ad already in the seen-DB or in this run. The
-        aggregator's own entries don't count (they carry the original's URL)."""
-        others = [
-            listing
-            for listing in list(self.seen.values()) + run_listings
-            if listing.source not in own_sources
-        ]
-        ids = {listing.id for listing in others}
-        keys = {key for key in (self._object_key(listing) for listing in others) if key}
-        return lambda key: key in ids or key in keys
-
     def _already_seen_elsewhere(
         self, listing: Listing, also_check: Optional[List[Listing]] = None
     ) -> bool:
@@ -417,7 +395,6 @@ class HouseMonitor:
         )
 
         all_listings: List[Listing] = []
-        ok_results: List[Any] = []
         summary_rows = []
         for scraper, result in zip(scrapers, scraper_results):
             if isinstance(result, BaseException):
@@ -436,7 +413,6 @@ class HouseMonitor:
                 # now, and queue the source for the same-day retry pass.
                 failed.append(scraper)
             all_listings.extend(result)
-            ok_results.append((scraper, result))
             label = SCRAPER_SUMMARY_LABELS.get(scraper.__class__.__name__)
             if label:
                 name, unit = label
@@ -464,39 +440,6 @@ class HouseMonitor:
                 log_notice(f"{name:<{name_width}}: {count_str:>{num_width}} {unit}")
 
         log_notice(f"Total listings fetched: {len(all_listings)}")
-
-        # Source-specific screening ahead of the duplicate check: an
-        # aggregator (Propylo) resolves its new cards to the original ads,
-        # keeps houses only and drops copies of ads a scraped portal has.
-        for scraper, result in ok_results:
-            if not hasattr(scraper, "screen_listings"):
-                continue
-            # Blacklisted titles are left to the loop below (stored silently
-            # there) — no point resolving them.
-            to_screen = [
-                listing
-                for listing in result
-                if not any(
-                    word.lower() in listing.title.lower() for word in SKIP_NO_PERSIST + BLACKLIST
-                )
-            ]
-            normal, silent, deferred = await scraper.screen_listings(
-                to_screen,
-                lambda lid: self.seen[lid].url if lid in self.seen else None,
-                self._origin_lookup(all_listings, {listing.source for listing in result}),
-            )
-            dropped = {id(listing) for listing in silent + deferred}
-            all_listings = [listing for listing in all_listings if id(listing) not in dropped]
-            for listing in silent:
-                existing = self.seen.get(listing.id)
-                if existing:
-                    listing.first_seen = existing.first_seen
-                self.seen[listing.id] = listing
-                db_changed = True
-            if deferred and scraper not in failed:
-                failed.append(scraper)
-            for portal, count in getattr(scraper, "unmatched_origins", {}).items():
-                self.day_unmatched[portal] = self.day_unmatched.get(portal, 0) + count
 
         # A blacklisted site's ads on portals that show no address are caught
         # as duplicates of this run's copies that do (same title + price).
@@ -608,7 +551,6 @@ class HouseMonitor:
         """Record today's run and return the error alerts due in today's 16:00
         email: what the last end-of-day check left pending, plus a missed-run
         notice once the monitor hadn't run for HEALTH_MIN_CONSECUTIVE+ days."""
-        self.day_unmatched = {}
         self.day_late = []
         try:
             today = date.today().isoformat()
@@ -713,8 +655,8 @@ class HouseMonitor:
     ) -> None:
         """The day's partial-loss findings that need no request: a sharp drop
         against the source's own daily counts, too few items against the
-        site's own total, the Propylo cross-check, and late sources. Also adds
-        today's counts to the per-source history kept in `state`."""
+        site's own total, and late sources. Also adds today's counts to the
+        per-source history kept in `state`."""
         history = state.get("count_history") or {}
         for scraper in scrapers:
             name = self._display_name(scraper)
@@ -729,13 +671,6 @@ class HouseMonitor:
                 if reason:
                     findings[f"coverage:{name}"] = reason
         state["count_history"] = history
-        for portal, count in self.day_unmatched.items():
-            if count >= HEALTH_UNMATCHED_MIN:
-                findings[f"missing:{portal}"] = (
-                    f"a Propylón ma {count} olyan ársávba eső ház jelent meg a(z) {portal} "
-                    f"oldaláról, amit a saját {portal}-scraperünk nem hozott — lehet, hogy "
-                    "kimaradnak hirdetések"
-                )
         for scraper in self.day_late:
             findings[f"late:{self._display_name(scraper)}"] = (
                 "16:00-kor hibával állt le, csak az újrapróbálásból jött meg "
@@ -831,7 +766,6 @@ class HouseMonitor:
             DingDongScraper(self.session),
             SonnbergerScraper(self.session),
             HegerRealScraper(self.session),
-            PropyloScraper(self.session),
             LystioScraper(self.session),
         ]
 

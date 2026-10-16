@@ -17,8 +17,6 @@ Sources that DO return results are checked for silent partial losses too:
   - for sources whose site reports its own total (Dibeo, Lystio,
     Immobilien.de, Willhaben), receiving clearly fewer items than that total
     — missing pages (coverage_reason);
-  - in-range houses that Propylo resolved to a willhaben ad our Willhaben
-    scraper never returned (the monitor counts them per day);
   - a source that only came through the same-day retry (late).
 The same end-of-day check also counts the monitor's own errors of the day
 (email not sent, DB not saved, the daily run or this check crashing). Every

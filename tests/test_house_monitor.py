@@ -25,7 +25,6 @@ from bs4 import BeautifulSoup
 from house_monitor import health as _health
 from house_monitor import monitor as _hm_module
 from house_monitor import scrapers as _scrapers_module
-from house_monitor.scrapers import propylo as _propylo
 from house_monitor.fetch import HTTPStatusError, fetch_bytes, fetch_text
 
 
@@ -42,7 +41,6 @@ def _new_monitor(hm):
     monitor.day_counts = {}
     monitor.today_errors = {}
     monitor.last_email_ok = True
-    monitor.day_unmatched = {}
     monitor.day_late = []
     return monitor
 
@@ -827,65 +825,6 @@ class TestSonnbergerCardParsing:
         assert len(cards) == 1
         listing_id, title, url, price = cards[0]
         assert price == 0.0
-
-
-class TestPropyloCardParsing:
-    # Mirrors at.propylo.com: the whole card is a single <a> whose href ends in
-    # /verkaufsimmobilie/<id>; the title is an inner <h2> and the price a
-    # div.price ("15.000 €", German thousands-dot format). The href is already
-    # absolute.
-    HTML = """
-    <div class="itemList">
-      <a href="https://at.propylo.com/verkaufsimmobilie/57124186" title="Einfamilienhaus Abriss">
-        <picture><img class="itemImg" src="x.webp"/></picture>
-        <div class="itemInfos">
-          <h2>Einfamilienhaus Abriss , 3000 m2 Grundstück</h2>
-          <div class="price">15.000 €</div>
-        </div>
-      </a>
-      <a href="https://at.propylo.com/verkaufsimmobilie/57152810" title="Nettes Haus">
-        <div class="itemInfos">
-          <h2>Nettes Haus</h2>
-          <div class="price">1.250.000 €</div>
-        </div>
-      </a>
-    </div>
-    """
-
-    def test_extracts_id_title_url_price(self, hm):
-        scraper = hm.PropyloScraper(session=None)
-        cards = scraper._parse_cards(self.HTML)
-        assert len(cards) == 2
-        listing_id, title, url, price = cards[0]
-        assert listing_id == "pro_57124186"
-        assert title == "Einfamilienhaus Abriss , 3000 m2 Grundstück"
-        assert url == "https://at.propylo.com/verkaufsimmobilie/57124186"
-        assert price == 15000.0
-        # thousands-dot parsed correctly, not truncated to 1.25
-        assert cards[1][3] == 1250000.0
-
-    def test_falls_back_to_anchor_title_when_no_h2(self, hm):
-        html = """
-        <a href="https://at.propylo.com/verkaufsimmobilie/999" title="Titel aus Attribut">
-          <div class="price">40.000 €</div>
-        </a>
-        """
-        scraper = hm.PropyloScraper(session=None)
-        cards = scraper._parse_cards(html)
-        assert len(cards) == 1
-        assert cards[0][1] == "Titel aus Attribut"
-        assert cards[0][3] == 40000.0
-
-    def test_ignores_non_listing_anchors(self, hm):
-        # Nav links / detail-page anchors that aren't /verkaufsimmobilie/<id>
-        # must be skipped entirely.
-        html = """
-        <a href="https://at.propylo.com?search">Suche</a>
-        <a href="https://at.propylo.com/immobilie/123">alt detail form</a>
-        <a href="https://at.propylo.com/immobilien/wien">Wien</a>
-        """
-        scraper = hm.PropyloScraper(session=None)
-        assert scraper._parse_cards(html) == []
 
 
 class TestLystioApiParsing:
@@ -1691,7 +1630,6 @@ def test_all_scrapers_are_constructible(hm):
         hm.DingDongScraper,
         hm.SonnbergerScraper,
         hm.HegerRealScraper,
-        hm.PropyloScraper,
         hm.LystioScraper,
     ]
     for cls in scraper_classes:
@@ -2074,7 +2012,7 @@ class TestStreaksAndAlertText:
     def test_due_alerts_need_two_days_and_get_readable_labels(self):
         streaks = {
             "source:ImmoScout24": {"days": 2, "last": "d", "reason": "r1"},
-            "source:Propylo": {"days": 1, "last": "d", "reason": "r2"},
+            "source:Dibeo": {"days": 1, "last": "d", "reason": "r2"},
             "internal:email_send": {"days": 3, "last": "d", "reason": "r3"},
         }
         assert _health.due_alerts(streaks) == [
@@ -2276,27 +2214,18 @@ class _NamedScraper(_OkScraper):
 
 
 class TestPartialLossFindings:
-    def test_drop_coverage_unmatched_and_late(self, hm):
+    def test_drop_coverage_and_late(self, hm):
         monitor = _new_monitor(hm)
         dropping, short, late = _NamedScraper(), _NamedScraper(coverage=(29, 54)), object()
         monitor.day_counts = {"_NamedScraper": 3}
-        monitor.day_unmatched = {"Willhaben": 2}
         monitor.day_late = [late]
         state = {"count_history": {"_NamedScraper": [20] * 10}}
         findings = {}
         monitor._source_findings_without_probe([dropping, short], state, findings)
         assert "ma csak 3 találat" in findings["drop:_NamedScraper"]
         assert "54 találat" in findings["coverage:_NamedScraper"]
-        assert "2 olyan" in findings["missing:Willhaben"]
         assert "újrapróbálásból" in findings["late:object"]
         assert state["count_history"]["_NamedScraper"][-1] == 3
-
-    def test_one_unmatched_house_a_day_is_tolerated(self, hm):
-        monitor = _new_monitor(hm)
-        monitor.day_unmatched = {"Willhaben": 1}
-        findings = {}
-        monitor._source_findings_without_probe([], {}, findings)
-        assert findings == {}
 
     def test_a_broken_source_is_not_also_dropping(self, hm, state_file):
         state_file.write_text(
@@ -2326,7 +2255,7 @@ def test_memory_snapshot_never_raises(hm):
     assert snapshot.startswith("VmRSS=") or snapshot.startswith("unavailable")
 
 
-class TestLateSourcesAndCrossCheckTotals:
+class TestLateSources:
     def test_a_source_rescued_by_the_retry_is_late(self, hm, state_file, monkeypatch):
         monkeypatch.setattr(hm, "INCOMPLETE_RETRY_DELAYS", (0,))
         monitor = _new_monitor(hm)
@@ -2334,212 +2263,6 @@ class TestLateSourcesAndCrossCheckTotals:
         flaky, fine = _FlakyOnceScraper(), _OkScraper([])
         assert asyncio.run(monitor._daily_run([flaky, fine])) == []
         assert monitor.day_late == [flaky]
-
-    def test_unmatched_houses_add_up_over_the_day(self, hm, state_file):
-        class _Screening(_ScreeningScraper):
-            async def screen_listings(self, listings, stored_url, is_known):
-                self.unmatched_origins = {"Willhaben": 1}
-                return listings, [], []
-
-        monitor = _new_monitor(hm)
-        monitor.notifier = _ResultNotifier()
-        scraper = _Screening([])
-        asyncio.run(monitor._scrape_and_notify([scraper]))
-        asyncio.run(monitor._scrape_and_notify([scraper]))  # e.g. the retry pass
-        assert monitor.day_unmatched == {"Willhaben": 2}
-
-
-# ---------------------------------------------------------------------------
-# Propylo: resolving aggregator cards to the original ads
-# ---------------------------------------------------------------------------
-
-
-_PRO = "https://at.propylo.com/verkaufsimmobilie/"
-_WH_HOUSE = (
-    "https://www.willhaben.at/iad/immobilien/d/haus-kaufen/burgenland/x/mobilheim-am-see-{}/"
-)
-_WH_FLAT = "https://www.willhaben.at/iad/immobilien/d/eigentumswohnung/wien/x/wohnung-{}/"
-
-
-class TestPropyloOriginHelpers:
-    @pytest.mark.parametrize(
-        "url, key",
-        [
-            (_WH_HOUSE.format(1086675364), "wh_1086675364"),
-            (_WH_HOUSE.format(1086675364) + "?utm_source=propylo", "wh_1086675364"),
-            ("https://www.willhaben.at/iad/object?adId=1086675364", "wh_1086675364"),
-            ("https://www.dibeo.at/expose/2230765", "dibeo_2230765"),
-            (
-                "https://www.wohnnet.at/immobilien/ferienhaus-7201-neudoerfl-kauf-297153200",
-                "wn_297153200",
-            ),
-            (
-                "https://www.immobilienscout24.at/expose/6ac7c2ae4aecd28523b42c32",
-                "6ac7c2ae4aecd28523b42c32",
-            ),
-            ("https://www.immowelt.at/expose/eb307f82-b2c3-4078-8714-d92f7d66ce74", None),
-            ("", None),
-        ],
-    )
-    def test_origin_key(self, url, key):
-        assert _propylo.origin_key(url) == key
-
-    @pytest.mark.parametrize(
-        "url, title, house",
-        [
-            (_WH_HOUSE.format(1), "Mobilheim", True),
-            (_WH_FLAT.format(1), "Haus am See", False),  # willhaben's category wins
-            ("https://www.urbanhome.at/suchen/8296709-3-zimmer-wohnung", "Schöne Lage", False),
-            ("https://www.immowelt.at/expose/x", "Gemütliche Gartenwohnung", False),
-            ("https://www.immowelt.at/expose/x", "Haus mit Einliegerwohnung", True),
-            ("https://www.immowelt.at/expose/x", "Mobilheim am See", True),
-            ("https://www.dibeo.at/expose/1", "Kompakte Garçonnière zum kleinen Preis", False),
-            ("https://www.immobilienscout24.at/expose/x", "Sicherer Komfort: KFZ-Parkplatz", False),
-            ("https://www.immowelt.at/expose/x", "BUNGALOW AM SEE - UFERPARZELLE", True),
-            ("https://www.immowelt.at/expose/x", "Helles Büro im Zentrum", True),  # wanted
-        ],
-    )
-    def test_is_house(self, url, title, house):
-        assert _propylo.is_house(url, title) is house
-
-
-class _RedirectResponse:
-    def __init__(self, status, location=""):
-        self.status = status
-        self.headers = {"Location": location} if location else {}
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-class _RedirectSession:
-    """GET answers from per-URL scripts of (status, Location); the last
-    answer repeats. A URL without a script must never be requested."""
-
-    def __init__(self, routes):
-        self.routes = routes
-        self.calls = []
-
-    def get(self, url, **kwargs):
-        assert kwargs.get("allow_redirects") is False
-        self.calls.append(url)
-        script = self.routes[url]
-        answer = script.pop(0) if len(script) > 1 else script[0]
-        return _RedirectResponse(*answer)
-
-
-def _pro_listing(hm, n, title="Haus", price=30000.0):
-    return hm.Listing(
-        id=f"pro_{n}",
-        title=title,
-        price=price,
-        url=f"{_PRO}{n}",
-        source="at.propylo.com",
-        first_seen="2026-10-09T16:00:00",
-        last_seen="2026-10-09T16:00:00",
-    )
-
-
-@pytest.fixture
-def no_resolve_delay(monkeypatch):
-    monkeypatch.setattr(_propylo, "PROPYLO_RESOLVE_DELAY", 0)
-    monkeypatch.setattr(_propylo, "PROPYLO_RESOLVE_BACKOFF", 0)
-
-
-class TestPropyloScreenListings:
-    def test_sorts_cards_by_their_original_ad(self, hm, no_resolve_delay):
-        session = _RedirectSession(
-            {
-                f"{_PRO}1": [(302, _WH_HOUSE.format(1086675111))],  # copy of a known ad
-                f"{_PRO}2": [(302, _WH_FLAT.format(1086675222))],  # an apartment
-                f"{_PRO}3": [(301, "https://www.immowelt.at/expose/abc")],  # new to us
-                f"{_PRO}4": [(429, "")],  # rate-limited on every attempt
-                f"{_PRO}5": [(429, ""), (302, "https://www.dibeo.at/expose/555")],  # 2nd try
-                f"{_PRO}8": [(200, "")],  # Propylo serves the ad itself
-                f"{_PRO}9": [(302, _WH_HOUSE.format(1086675999))],  # missed by our scraper
-            }
-        )
-        scraper = hm.PropyloScraper(session)
-        cards = [_pro_listing(hm, n) for n in (1, 2, 3, 4, 5, 8, 9)]
-        known = {"wh_1086675111"}
-        normal, silent, deferred = asyncio.run(
-            scraper.screen_listings(cards, lambda lid: None, known.__contains__)
-        )
-        assert [c.id for c in normal] == ["pro_3", "pro_5", "pro_8", "pro_9"]
-        assert [c.id for c in silent] == ["pro_1", "pro_2"]
-        assert [c.id for c in deferred] == ["pro_4"]
-        # A willhaben house our Willhaben scraper never returned is counted.
-        assert scraper.unmatched_origins == {"Willhaben": 1}
-        # Emails link the original ad; Propylo's own page stays as it is.
-        assert normal[0].url == "https://www.immowelt.at/expose/abc"
-        assert normal[1].url == "https://www.dibeo.at/expose/555"
-        assert normal[2].url == f"{_PRO}8"
-        assert session.calls.count(f"{_PRO}4") == _propylo.PROPYLO_RESOLVE_ATTEMPTS
-        # Only Propylo's own card URLs are requested, never the original ads.
-        assert all(url.startswith(_PRO) for url in session.calls)
-
-    def test_cards_already_in_the_db_are_not_resolved_again(self, hm, no_resolve_delay):
-        session = _RedirectSession({})  # any request would raise KeyError
-        scraper = hm.PropyloScraper(session)
-        stored = {"pro_6": _WH_HOUSE.format(1086675666), "pro_7": f"{_PRO}7"}
-        cards = [_pro_listing(hm, 6), _pro_listing(hm, 7)]
-        normal, silent, deferred = asyncio.run(
-            scraper.screen_listings(cards, stored.get, {"wh_1086675666"}.__contains__)
-        )
-        # pro_6's original is a scraped willhaben ad: that source reports it
-        # (and its price changes), so the copy stays silent.
-        assert [c.id for c in silent] == ["pro_6"]
-        assert silent[0].url == _WH_HOUSE.format(1086675666)
-        assert [c.id for c in normal] == ["pro_7"] and deferred == []
-        assert session.calls == []
-
-
-class _ScreeningScraper(_OkScraper):
-    """A stand-in aggregator: screen_listings() splits by title."""
-
-    async def screen_listings(self, listings, stored_url, is_known):
-        def pick(word):
-            return [listing for listing in listings if word in listing.title]
-
-        return pick("new"), pick("silent"), pick("deferred")
-
-
-class TestScrapeAndNotifyScreening:
-    def test_silent_are_stored_unmailed_and_deferred_are_retried(self, hm, tmp_path, monkeypatch):
-        monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
-        monitor = _new_monitor(hm)
-        monitor.notifier = _StubNotifier()
-        scraper = _ScreeningScraper(
-            [
-                _pro_listing(hm, 1, "a new house"),
-                _pro_listing(hm, 2, "a silent copy"),
-                _pro_listing(hm, 3, "a deferred card"),
-                # Blacklisted: never screened, stored silently by the main loop.
-                _pro_listing(hm, 4, "a deferred Sommerhaus"),
-            ]
-        )
-        failed = asyncio.run(monitor._scrape_and_notify([scraper]))
-        body = monitor.notifier.sent[0][1]
-        assert "a new house" in body and "silent" not in body and "deferred" not in body
-        # The deferred card isn't stored; the blacklisted one is.
-        assert set(monitor.seen) == {"pro_1", "pro_2", "pro_4"}
-        assert failed == [scraper]  # ... and the source is retried the same day
-
-    def test_origin_lookup_ignores_the_aggregators_own_entries(self, hm):
-        monitor = _new_monitor(hm)
-        hex_id = "6ac7c2ae4aecd28523b42c32"
-        own = _pro_listing(hm, 9)
-        own.url = f"https://www.immobilienscout24.at/expose/{hex_id}"
-        monitor.seen = {own.id: own}
-        assert monitor._origin_lookup([], {"at.propylo.com"})(hex_id) is False
-        twin = _pro_listing(hm, 10)
-        twin.id, twin.source = f"imd_{hex_id}", "immodirekt.at"
-        twin.url = f"https://www.immodirekt.at/immobilie/x-{hex_id}/"
-        monitor.seen[twin.id] = twin
-        assert monitor._origin_lookup([], {"at.propylo.com"})(hex_id) is True
 
 
 class TestScrapeAndNotifyDbUpdate:
