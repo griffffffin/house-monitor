@@ -284,8 +284,9 @@ class HouseMonitor:
 
     def _at_blacklisted_site(self, listing: Listing) -> bool:
         """Whether the card's address names a SITE_BLACKLIST site: its
-        postcode as a whole number and its street, case-insensitively. Cards
-        without an address (most sources) never match."""
+        postcode as a whole number and its street, case-insensitively (an
+        empty street covers the whole postcode). Cards without an address
+        (most sources) never match."""
         import re as _re
 
         location = listing.location.lower()

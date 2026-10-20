@@ -1569,7 +1569,7 @@ def test_blacklist_catches_west_hungary(hm):
 def test_site_blacklist_entries_are_postcode_street_pairs(hm):
     for postcode, street in hm.SITE_BLACKLIST:
         assert postcode.isdigit() and len(postcode) == 4
-        assert street and street == street.strip()
+        assert street == street.strip()  # "" = the whole postcode
 
 
 class TestSiteBlacklist:
@@ -1601,6 +1601,14 @@ class TestSiteBlacklist:
         for street in ("Musterstraße 10", "Musterstr. 10", "MUSTERSTRASSE 10"):
             assert self._at_site(hm, f"9999 Musterstadt, {street}"), street
         assert not self._at_site(hm, "9999 Musterstadt")  # an ad without a street
+
+    def test_an_empty_street_covers_the_whole_postcode(self, hm, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "")])
+        assert self._at_site(hm, "9999 Musterstadt")  # an ad without a street
+        assert self._at_site(hm, "Testgasse 3, 9999 Musterstadt")
+        assert not self._at_site(hm, "8888 Nachbarort")
+        assert not self._at_site(hm, "99990 Anderswo")  # postcode as a whole number
+        assert not self._at_site(hm, "")  # sources that show no address
 
     def test_site_ads_and_their_addressless_copies_stay_silent(self, hm, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])

@@ -38,6 +38,12 @@ SITE_BLACKLIST = [
     # FAQ). "Moserstr" also covers the abbreviated spelling. The first few
     # houses of the street lie outside the site and would be hidden too.
     ("4540", "Moserstr"),
+    # The campsite of 7063 Oggau am Neusiedler See: its ads say the site is
+    # usable only in season and its water supply is seasonal. They name no
+    # street (the site's road is "Campingplatz"), only the postcode and the
+    # village, so the empty street covers the whole postcode — every ad in
+    # Oggau inside the price range has been a unit of this site.
+    ("7063", ""),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
