@@ -1596,6 +1596,12 @@ class TestSiteBlacklist:
         assert not self._at_site(hm, "Musterweg, 99990 Anderswo")  # postcode as a whole number
         assert not self._at_site(hm, "")  # sources that show no address
 
+    def test_a_shortened_street_covers_every_spelling(self, hm, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterstr")])
+        for street in ("Musterstraße 10", "Musterstr. 10", "MUSTERSTRASSE 10"):
+            assert self._at_site(hm, f"9999 Musterstadt, {street}"), street
+        assert not self._at_site(hm, "9999 Musterstadt")  # an ad without a street
+
     def test_site_ads_and_their_addressless_copies_stay_silent(self, hm, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
         monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))

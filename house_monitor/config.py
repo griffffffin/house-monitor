@@ -32,6 +32,12 @@ SITE_BLACKLIST = [
     # in the whole site from November to March. The street continues into
     # Gerasdorf (2201), hence the postcode.
     ("1220", "Campingplatzweg"),
+    # The leisure-garden site at Moserstraße, 4540 Pfarrkirchen bei Bad Hall:
+    # its water runs only from about April to October, it has no power or
+    # sewer connection, and permanent living is not allowed (the operator's
+    # FAQ). "Moserstr" also covers the abbreviated spelling. The first few
+    # houses of the street lie outside the site and would be hidden too.
+    ("4540", "Moserstr"),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
