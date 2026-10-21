@@ -1,6 +1,7 @@
 """Configuration: price filter, blacklist, per-site URLs, and email settings."""
 
 import os
+from urllib.parse import quote
 
 DATA_FILE = "seen-houses.json"
 
@@ -213,12 +214,26 @@ HEUTE_BASE_URL = "https://www.heute.at"
 # objectType: 3 = Haus, 6 = Einzelhandel, 7 = Gastgewerbe, 8 = Industrie / Gewerbe,
 # 10 = Sonstige / Sonderobjekte, 11 = Freizeitimmobilie gewerblich — the
 # categories the owner picked. The search takes only a maximum price.
+# Location: the nine Austrian federal states (f[location_or_id][] = f_<Bundesland>)
+# — the search also carries foreign broker ads (Hungary, Croatia, Serbia, Sri
+# Lanka, the Philippines, …), and the owner wants Austrian ones only.
+HEUTE_STATES = (
+    "Burgenland",
+    "Kärnten",
+    "Niederösterreich",
+    "Oberösterreich",
+    "Salzburg",
+    "Steiermark",
+    "Tirol",
+    "Vorarlberg",
+    "Wien",
+)
 HEUTE_SEARCH_URL = (
     f"{HEUTE_BASE_URL}/immobilien/de/immobilien-suche"
     "?f%5BobjectType%5D%5B%5D=3&f%5BobjectType%5D%5B%5D=6&f%5BobjectType%5D%5B%5D=7"
     "&f%5BobjectType%5D%5B%5D=8&f%5BobjectType%5D%5B%5D=10&f%5BobjectType%5D%5B%5D=11"
     "&f%5BbuyingType%5D=buy&f%5Bsorting%5D=price_asc"
-)
+) + "".join(f"&f%5Blocation_or_id%5D%5B%5D=f_{quote(state)}" for state in HEUTE_STATES)
 HEUTE_URL = f"{HEUTE_SEARCH_URL}&f%5Bprice%5D={EUR_PRICE_TO}"
 
 # used by: RaiffeisenScraper

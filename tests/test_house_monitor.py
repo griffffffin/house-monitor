@@ -1049,6 +1049,28 @@ class TestHeuteCardParsing:
         scraper = hm.HeuteScraper(session=None)
         assert scraper._parse_cards("<div class='container'></div>") == []
 
+    def test_search_and_probe_are_limited_to_the_austrian_states(self):
+        # heute.at also lists ads abroad; the location filter keeps the nine
+        # federal states only — in the probe too, so it checks the same search.
+        from urllib.parse import parse_qs, urlsplit
+
+        from house_monitor.config import HEUTE_PROBE_URL, HEUTE_URL
+
+        states = {
+            "f_Burgenland",
+            "f_Kärnten",
+            "f_Niederösterreich",
+            "f_Oberösterreich",
+            "f_Salzburg",
+            "f_Steiermark",
+            "f_Tirol",
+            "f_Vorarlberg",
+            "f_Wien",
+        }
+        for url in (HEUTE_URL, HEUTE_PROBE_URL):
+            query = parse_qs(urlsplit(url).query)
+            assert set(query["f[location_or_id][]"]) == states
+
     def test_pages_until_404_and_filters_by_price(self, hm, monkeypatch):
         async def _no_sleep(delay):
             return None
