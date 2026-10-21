@@ -45,6 +45,7 @@ from house_monitor.scrapers import (
     FindMyHomeScraper,
     GoldgrubeScraper,
     HegerRealScraper,
+    HeuteScraper,
     ImmobIlienNetScraper,
     ImmobilienDeScraper,
     ImmodirektScraper,
@@ -112,6 +113,7 @@ async def main():
             DingDongScraper(session),
             SonnbergerScraper(session),
             HegerRealScraper(session),
+            HeuteScraper(session),
             LystioScraper(session),
         ]
 

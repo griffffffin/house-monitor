@@ -199,6 +199,19 @@ HEGERREAL_BASE_URL = "https://www.hegerreal.at"
 # naturally parse to price 0.0 and get dropped by the existing price==0 filter.
 HEGERREAL_URL = f"{HEGERREAL_BASE_URL}/aktuelle-immobilien"
 
+# used by: HeuteScraper
+HEUTE_BASE_URL = "https://www.heute.at"
+# objectType: 3 = Haus, 6 = Einzelhandel, 7 = Gastgewerbe, 8 = Industrie / Gewerbe,
+# 10 = Sonstige / Sonderobjekte, 11 = Freizeitimmobilie gewerblich — the
+# categories the owner picked. The search takes only a maximum price.
+HEUTE_SEARCH_URL = (
+    f"{HEUTE_BASE_URL}/immobilien/de/immobilien-suche"
+    "?f%5BobjectType%5D%5B%5D=3&f%5BobjectType%5D%5B%5D=6&f%5BobjectType%5D%5B%5D=7"
+    "&f%5BobjectType%5D%5B%5D=8&f%5BobjectType%5D%5B%5D=10&f%5BobjectType%5D%5B%5D=11"
+    "&f%5BbuyingType%5D=buy&f%5Bsorting%5D=price_asc"
+)
+HEUTE_URL = f"{HEUTE_SEARCH_URL}&f%5Bprice%5D={EUR_PRICE_TO}"
+
 # used by: RaiffeisenScraper
 RAIFFEISEN_BASE_URL = "https://www.raiffeisen-immobilien.at"
 RAIFFEISEN_SEARCH_URL = (
@@ -372,3 +385,4 @@ DINGDONG_PROBE_URL = (
     "?field_inserent_value=All&field_kategorie_tid=5&field_miete_kauf_value=kauf"
     "&order=field_preis&sort=asc"
 )
+HEUTE_PROBE_URL = HEUTE_SEARCH_URL

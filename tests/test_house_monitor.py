@@ -996,6 +996,88 @@ class TestHegerRealCardParsing:
         assert scraper._parse_cards("<div class='container'></div>") == []
 
 
+class TestHeuteCardParsing:
+    # Mirrors the real heute.at/immobilien list markup: one <a> per listing,
+    # the address and an h5 title, then value/label pairs where the area comes
+    # BEFORE the price — so the price has to be picked by its "Kaufpreis" label.
+    @staticmethod
+    def _card(object_id, title, data, address="9999 Musterstadt"):
+        values = "".join(
+            f'<div class="float-start me-3"><strong class="mn--realty-data-value">{value}'
+            f'</strong><br/><small class="mn--realty-data-label">{label}</small></div>'
+            for value, label in data
+        )
+        return f"""
+        <a class="realty mn--realty-row" href="/immobilien/de/immobilie/slug/{object_id}">
+          <div class="mn--realty-col-data">
+            <div class="my-3">
+              <div class="mn--realty-address">{address}</div>
+              <h5 class="mn--realty-title" title="{title}">
+                {title}
+              </h5>
+            </div>
+            <div class="clearfix mb-3 mb-md-0">{values}</div>
+          </div>
+        </a>
+        <div id="ad-inside-full-pos2" class="mb-3"></div>
+        """
+
+    def test_extracts_id_title_url_price_and_address(self, hm):
+        html = self._card(
+            "OBGC0001",
+            "Kleines Haus mit Garten",
+            [("52 m<sup>2</sup>", "Wohnfläche"), ("3", "Zimmer"), ("€\xa056.000,00", "Kaufpreis")],
+        )
+        scraper = hm.HeuteScraper(session=None)
+        assert scraper._parse_cards(html) == [
+            (
+                "heute_OBGC0001",
+                "Kleines Haus mit Garten",
+                "https://www.heute.at/immobilien/de/immobilie/slug/OBGC0001",
+                56000.0,  # the Kaufpreis value, not the 52 m² before it
+                "9999 Musterstadt",
+            )
+        ]
+
+    def test_card_without_kaufpreis_parses_to_zero(self, hm):
+        html = self._card("OBGC0002", "Lager", [("120 m<sup>2</sup>", "Nutzfläche")])
+        scraper = hm.HeuteScraper(session=None)
+        assert scraper._parse_cards(html)[0][3] == 0.0
+
+    def test_empty_page_yields_no_cards(self, hm):
+        scraper = hm.HeuteScraper(session=None)
+        assert scraper._parse_cards("<div class='container'></div>") == []
+
+    def test_pages_until_404_and_filters_by_price(self, hm, monkeypatch):
+        async def _no_sleep(delay):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        page_1 = self._card("OBGC0003", "Platzhalter", [("€\xa01,00", "Kaufpreis")]) + self._card(
+            "OBGC0004", "Mobilheim am See", [("€\xa019.000,00", "Kaufpreis")]
+        )
+        page_2 = self._card("OBGC0005", "Bungalow", [("€\xa065.000,00", "Kaufpreis")])
+
+        class _PagedSession:
+            def __init__(self):
+                self.urls = []
+
+            def get(self, url, **kwargs):
+                self.urls.append(url)
+                pages = {"p=1": page_1, "p=2": page_2}
+                body = pages.get(url.rsplit("&", 1)[-1])
+                return _FakeResponse(status=200 if body else 404, body=body or "")
+
+        session = _PagedSession()
+        scraper = hm.HeuteScraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
+        assert [u.rsplit("&", 1)[-1] for u in session.urls] == ["p=1", "p=2", "p=3"]
+        # The 1 € placeholder ad is dropped by the client-side EUR_PRICE_FROM filter.
+        assert [listing.id for listing in listings] == ["heute_OBGC0004", "heute_OBGC0005"]
+        assert listings[0].location == "9999 Musterstadt"
+        assert scraper.incomplete is False
+
+
 class TestImmoScout24CardParsing:
     HTML = """
     <ol data-testid="results-items">
@@ -1654,6 +1736,7 @@ def test_all_scrapers_are_constructible(hm):
         hm.DingDongScraper,
         hm.SonnbergerScraper,
         hm.HegerRealScraper,
+        hm.HeuteScraper,
         hm.LystioScraper,
     ]
     for cls in scraper_classes:

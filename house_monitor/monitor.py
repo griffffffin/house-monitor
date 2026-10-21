@@ -45,6 +45,7 @@ from .scrapers import (
     FindMyHomeScraper,
     GoldgrubeScraper,
     HegerRealScraper,
+    HeuteScraper,
     ImmobIlienNetScraper,
     ImmobilienDeScraper,
     ImmodirektScraper,
@@ -85,6 +86,7 @@ SCRAPER_SUMMARY_LABELS = {
     "DingDongScraper": ("DingDong", "ads"),
     "SonnbergerScraper": ("Sonnberger", "ads"),
     "HegerRealScraper": ("HegerReal", "listings"),
+    "HeuteScraper": ("Heute.at", "listings"),
     "LystioScraper": ("Lystio", "listings"),
 }
 
@@ -113,6 +115,7 @@ SOURCE_DISPLAY_NAMES = {
     "ding-dong.at": "DingDong",
     "sonnberger.co.at": "Sonnberger",
     "hegerreal.at": "HegerReal",
+    "heute.at": "Heute.at",
     "lystio.at": "Lystio",
 }
 
@@ -767,6 +770,7 @@ class HouseMonitor:
             DingDongScraper(self.session),
             SonnbergerScraper(self.session),
             HegerRealScraper(self.session),
+            HeuteScraper(self.session),
             LystioScraper(self.session),
         ]
 
