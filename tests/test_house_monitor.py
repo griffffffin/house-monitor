@@ -1649,6 +1649,18 @@ def test_blacklist_catches_west_hungary(hm):
     assert not blacklisted("Kleines Haus im Westen von Wien")
 
 
+def test_blacklist_catches_cellar_compartments_but_not_flats_with_one(hm):
+    blacklisted = hm.HouseMonitor._title_blacklisted
+    assert blacklisted("Kellerabteil in zentraler Lage!")
+    assert blacklisted("2 Kellerabteile als Lagerfläche, U-Bahn nah")
+    assert blacklisted("Lagerfläche: 2 KELLERABTEILE je ca. 5 m²")
+    assert not blacklisted("2-Zimmer-Wohnung mit Balkon und Kellerabteil")
+    assert not blacklisted("Kleine Wohnung mit Lift & Kellerabteil")
+    # The plain BLACKLIST still applies through the same helper
+    assert blacklisted("Uriges Preßhaus in der Kellergasse")
+    assert not blacklisted("Kleines Haus mit Keller")
+
+
 def test_site_blacklist_entries_are_postcode_street_pairs(hm):
     for postcode, street in hm.SITE_BLACKLIST:
         assert postcode.isdigit() and len(postcode) == 4

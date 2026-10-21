@@ -20,6 +20,15 @@ BLACKLIST = [
     "waldgrundstück",
 ]
 
+# Blacklisted unless the title also names one of the exceptions:
+# (word, exceptions), case-insensitive substrings like BLACKLIST.
+BLACKLIST_UNLESS = [
+    # A cellar compartment sold on its own ("Kellerabteil in zentraler Lage",
+    # "2 Kellerabteile als Lagerfläche") — but flat ads list theirs too
+    # ("2-Zimmer-Wohnung mit Kellerabteil"), and those stay.
+    ("kellerabteil", ("wohnung",)),
+]
+
 # Sites skipped by their ADDRESS, not their title: (postcode, street) pairs,
 # matched against the address that willhaben, Lystio, ImmoScout24,
 # Immodirekt, Immobilien.net and DerStandard show on their cards

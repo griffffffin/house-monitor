@@ -16,6 +16,7 @@ import aiohttp
 
 from .config import (
     BLACKLIST,
+    BLACKLIST_UNLESS,
     DATA_FILE,
     DUPLICATE_LOOKBACK_DAYS,
     EMAIL_CONFIG,
@@ -286,6 +287,19 @@ class HouseMonitor:
         m = _re.search(r"(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])", (listing.url or "").lower())
         return m.group(0) if m else None
 
+    @staticmethod
+    def _title_blacklisted(title: str) -> bool:
+        """Whether the title names a BLACKLIST word, or a BLACKLIST_UNLESS
+        word without any of its exceptions (case-insensitive substrings)."""
+        title_lower = title.lower()
+        if any(word.lower() in title_lower for word in BLACKLIST):
+            return True
+        return any(
+            word.lower() in title_lower
+            and not any(exception.lower() in title_lower for exception in exceptions)
+            for word, exceptions in BLACKLIST_UNLESS
+        )
+
     def _at_blacklisted_site(self, listing: Listing) -> bool:
         """Whether the card's address names a SITE_BLACKLIST site: its
         postcode as a whole number and its street, case-insensitively (an
@@ -460,7 +474,7 @@ class HouseMonitor:
                 continue
 
             at_site = self._at_blacklisted_site(listing)
-            if at_site or any(word.lower() in title_lower for word in BLACKLIST):
+            if at_site or self._title_blacklisted(listing.title):
                 if listing.id not in self.seen:
                     where = f" ({listing.location})" if at_site else ""
                     logging.info(f"Blacklisted listing hidden: {listing.title}{where}")
