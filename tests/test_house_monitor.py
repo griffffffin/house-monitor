@@ -13,6 +13,7 @@ hand-built HTML/data fixtures.
 
 import asyncio
 import json
+import socket
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -2360,6 +2361,18 @@ class _FlakyOnceScraper(_OkScraper):
 def test_memory_snapshot_never_raises(hm):
     snapshot = hm.HouseMonitor._memory_snapshot()
     assert snapshot.startswith("VmRSS=") or snapshot.startswith("unavailable")
+
+
+def test_session_connects_over_ipv4_only(hm):
+    # The Pi has no IPv6 route: an IPv6-only DNS answer must never be used
+    async def make():
+        session = hm.HouseMonitor._new_session()
+        try:
+            return session.connector.family
+        finally:
+            await session.close()
+
+    assert asyncio.run(make()) == socket.AF_INET
 
 
 class TestLateSources:

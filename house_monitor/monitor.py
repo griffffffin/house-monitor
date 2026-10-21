@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -729,10 +730,21 @@ class HouseMonitor:
         self.day_late = [scraper for scraper in failed_at_1600 if scraper not in failed]
         return failed
 
-    async def run(self):
-        log_notice("Monitor has started.")
-
-        self.session = aiohttp.ClientSession(
+    @staticmethod
+    def _new_session() -> aiohttp.ClientSession:
+        """The HTTP session every scraper shares. Must be called inside the
+        running event loop."""
+        # IPv4 only: the Pi has no IPv6 route. aiohttp's c-ares resolver asks
+        # for A and AAAA records together, and when the A answer comes late it
+        # returns only the IPv6 addresses — the connect then fails at once with
+        # "Network is unreachable", and the connector's 10 s DNS cache hands the
+        # same answer to fetch_text's retries (2026-10-20/21: up to 11 sources
+        # at 16:00, behind a slow systemd-resolved stub). AF_INET asks for A
+        # records only, so the 16:00 burst sends half the queries, and a late
+        # answer ends in a DNS error, which is not cached and gets retried.
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
+        return aiohttp.ClientSession(
+            connector=connector,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -748,6 +760,11 @@ class HouseMonitor:
             # explicit ClientTimeout per-call, which overrides this.
             timeout=aiohttp.ClientTimeout(total=30),
         )
+
+    async def run(self):
+        log_notice("Monitor has started.")
+
+        self.session = self._new_session()
 
         scrapers = [
             ImmoScout24Scraper(self.session),
