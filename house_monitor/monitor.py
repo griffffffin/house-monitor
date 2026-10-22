@@ -303,15 +303,18 @@ class HouseMonitor:
     def _at_blacklisted_site(self, listing: Listing) -> bool:
         """Whether the card's address names a SITE_BLACKLIST site: its
         postcode as a whole number and its street, case-insensitively (an
-        empty street covers the whole postcode). Cards without an address
+        empty street covers the whole postcode), and the title names one of
+        the entry's title words, if it has any. Cards without an address
         (most sources) never match."""
         import re as _re
 
         location = listing.location.lower()
+        title = listing.title.lower()
         return any(
             _re.search(rf"(?<!\d){_re.escape(postcode)}(?!\d)", location)
             and street.lower() in location
-            for postcode, street in SITE_BLACKLIST
+            and (not title_words or any(word.lower() in title for word in title_words))
+            for postcode, street, title_words in SITE_BLACKLIST
         )
 
     def _already_seen_elsewhere(

@@ -1683,21 +1683,24 @@ def test_blacklist_catches_cellar_compartments_but_not_flats_with_one(hm):
     assert not blacklisted("Kleines Haus mit Keller")
 
 
-def test_site_blacklist_entries_are_postcode_street_pairs(hm):
-    for postcode, street in hm.SITE_BLACKLIST:
+def test_site_blacklist_entries_are_postcode_street_title_words(hm):
+    for postcode, street, title_words in hm.SITE_BLACKLIST:
         assert postcode.isdigit() and len(postcode) == 4
         assert street == street.strip()  # "" = the whole postcode
+        # A tuple, not a bare string: ("mobilheim") would match single letters.
+        assert isinstance(title_words, tuple)  # () = any title
+        assert all(word and word == word.strip() for word in title_words)
 
 
 class TestSiteBlacklist:
     @staticmethod
-    def _at_site(hm, location):
-        listing = TestScrapeAndNotifyRetryCollection._listing(hm, "x_1", "Haus", 30000.0)
+    def _at_site(hm, location, title="Haus"):
+        listing = TestScrapeAndNotifyRetryCollection._listing(hm, "x_1", title, 30000.0)
         listing.location = location
         return _new_monitor(hm)._at_blacklisted_site(listing)
 
     def test_matches_every_sources_address_format(self, hm, monkeypatch):
-        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg", ())])
         for location in (
             "9999 Musterstadt, 22. Bezirk, Musterweg",  # willhaben
             "9999 Musterstadt, Musterweg",  # Lystio, Immodirekt
@@ -1707,28 +1710,39 @@ class TestSiteBlacklist:
             assert self._at_site(hm, location), location
 
     def test_needs_both_the_postcode_and_the_street(self, hm, monkeypatch):
-        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg", ())])
         assert not self._at_site(hm, "Musterweg, 8888 Nachbarort")  # same street, other town
         assert not self._at_site(hm, "9999 Musterstadt, Testgasse")  # same town, other street
         assert not self._at_site(hm, "Musterweg, 99990 Anderswo")  # postcode as a whole number
         assert not self._at_site(hm, "")  # sources that show no address
 
     def test_a_shortened_street_covers_every_spelling(self, hm, monkeypatch):
-        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterstr")])
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterstr", ())])
         for street in ("Musterstraße 10", "Musterstr. 10", "MUSTERSTRASSE 10"):
             assert self._at_site(hm, f"9999 Musterstadt, {street}"), street
         assert not self._at_site(hm, "9999 Musterstadt")  # an ad without a street
 
     def test_an_empty_street_covers_the_whole_postcode(self, hm, monkeypatch):
-        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "")])
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "", ())])
         assert self._at_site(hm, "9999 Musterstadt")  # an ad without a street
         assert self._at_site(hm, "Testgasse 3, 9999 Musterstadt")
         assert not self._at_site(hm, "8888 Nachbarort")
         assert not self._at_site(hm, "99990 Anderswo")  # postcode as a whole number
         assert not self._at_site(hm, "")  # sources that show no address
 
+    def test_title_words_keep_the_postcodes_other_ads(self, hm, monkeypatch):
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "", ("mobilheim", "campingplatz"))])
+        place = "9999 Musterstadt"
+        assert self._at_site(hm, place, "Gemütliches Mobilheim am See")
+        assert self._at_site(hm, place, "Wohnmobilheim | sofort verfügbar")  # inside a word
+        assert self._at_site(hm, place, "Ferienhaus am CAMPINGPLATZ")  # case-insensitive
+        assert not self._at_site(hm, place, "Ferienhäuschen auf Pachtgrund")
+        assert not self._at_site(hm, place, "Weinberg in Südostlage")
+        assert not self._at_site(hm, "8888 Nachbarort", "Mobilheim am See")
+        assert not self._at_site(hm, "", "Mobilheim am See")  # sources that show no address
+
     def test_site_ads_and_their_addressless_copies_stay_silent(self, hm, tmp_path, monkeypatch):
-        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg")])
+        monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg", ())])
         monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
         make = TestScrapeAndNotifyRetryCollection._listing
         at_site = make(hm, "wh_1", "Ferienhaus am Teich", 30000.0, source="willhaben.at")

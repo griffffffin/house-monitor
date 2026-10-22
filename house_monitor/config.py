@@ -30,30 +30,33 @@ BLACKLIST_UNLESS = [
     ("kellerabteil", ("wohnung",)),
 ]
 
-# Sites skipped by their ADDRESS, not their title: (postcode, street) pairs,
-# matched against the address that willhaben, Lystio, ImmoScout24,
-# Immodirekt, Immobilien.net and DerStandard show on their cards
-# (Listing.location) — the postcode as a whole number, the street as a
-# case-insensitive substring. A match is stored silently like a BLACKLIST
+# Sites skipped by their ADDRESS, not their title: (postcode, street,
+# title words), matched against the address that willhaben, Lystio,
+# ImmoScout24, Immodirekt, Immobilien.net, DerStandard and Heute.at show on
+# their cards (Listing.location) — the postcode as a whole number, the street
+# as a case-insensitive substring ("" = the whole postcode). Title words
+# narrow an entry to ads whose title names one of them (case-insensitive
+# substrings; () = any title), for a site whose ads give no street: the
+# postcode's other ads stay. A match is stored silently like a BLACKLIST
 # hit, and copies of it on portals that show no address are hidden as
 # duplicates (same title + price in the same run).
-SITE_BLACKLIST = [
+SITE_BLACKLIST: list[tuple[str, str, tuple[str, ...]]] = [
     # The holiday site at Campingplatzweg, 1220 Wien: the water is shut off
     # in the whole site from November to March. The street continues into
     # Gerasdorf (2201), hence the postcode.
-    ("1220", "Campingplatzweg"),
+    ("1220", "Campingplatzweg", ()),
     # The leisure-garden site at Moserstraße, 4540 Pfarrkirchen bei Bad Hall:
     # its water runs only from about April to October, it has no power or
     # sewer connection, and permanent living is not allowed (the operator's
     # FAQ). "Moserstr" also covers the abbreviated spelling. The first few
     # houses of the street lie outside the site and would be hidden too.
-    ("4540", "Moserstr"),
+    ("4540", "Moserstr", ()),
     # The campsite of 7063 Oggau am Neusiedler See: its ads say the site is
     # usable only in season and its water supply is seasonal. They name no
     # street (the site's road is "Campingplatz"), only the postcode and the
     # village, so the empty street covers the whole postcode — every ad in
     # Oggau inside the price range has been a unit of this site.
-    ("7063", ""),
+    ("7063", "", ()),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
