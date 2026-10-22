@@ -57,6 +57,12 @@ SITE_BLACKLIST: list[tuple[str, str, tuple[str, ...]]] = [
     # village, so the empty street covers the whole postcode — every ad in
     # Oggau inside the price range has been a unit of this site.
     ("7063", "", ()),
+    # The Storchencamp of 7083 Purbach am Neusiedler See: closed from the end
+    # of October to the beginning of April, the water is shut off in winter.
+    # Most of its ads give only the postcode and the town, so the postcode
+    # with the words its ads' titles use; other Purbach ads (a holiday house
+    # on leased land elsewhere, vineyards) stay.
+    ("7083", "", ("storchencamp", "campingplatz", "mobilheim")),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
