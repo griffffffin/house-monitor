@@ -63,6 +63,13 @@ SITE_BLACKLIST: list[tuple[str, str, tuple[str, ...]]] = [
     # with the words its ads' titles use; other Purbach ads (a holiday house
     # on leased land elsewhere, vineyards) stay.
     ("7083", "", ("storchencamp", "campingplatz", "mobilheim")),
+    # The campsite of 7161 St. Andrä am Zicksee and the mobile-home area next
+    # to it: open only from April to mid-October, closed in winter with
+    # everything shut off (private ads of the site: the water is turned off in
+    # November). Its ads give only the postcode and the town, so the postcode
+    # with the words its units' titles use; the houses by the lake, the
+    # village and the Reihersiedlung of Apetlon (also 7161) stay.
+    ("7161", "", ("mobilheim", "mobilwohnheim", "wohnmobil", "campingplatz")),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
