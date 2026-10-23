@@ -1266,13 +1266,22 @@ class TestWohnnetCardParsing:
 
 
 class TestDerStandardCardParsing:
+    # The markup since 2026-10-21: the link sits in the title, and the
+    # footer's area item comes before the price.
     HTML = """
-    <li class="sc-listing-card">
-      <a class="sc-listing-card-content-background-link" href="/detail/12345678"></a>
-      <div class="sc-listing-card-title">Haus in Villach</div>
-      <span class="property-address"><span class="property-address-zip-city">9500 Villach</span>
-        <span class="property-address-rest">Testgasse</span></span>
-      <span class="ResultItemPrice-module-scss-module__abc">€ 189.000</span>
+    <li class="sc-listing-card sc-listing-card-default">
+      <a class="ResultItemImageSlider-module-scss-module__x__imageSliderLink"
+         href="/detail/12345678"></a>
+      <h2 class="sc-listing-card-title sc-listing-card-title-default" title="Haus in Villach">
+        <a class="sc-listing-card-title-stretched-link" href="/detail/12345678">Haus in Villach</a>
+      </h2>
+      <span class="property-address"><span class="property-address-zip-city">9500 Villach<!-- -->,
+        </span><span class="property-address-rest">Testgasse</span></span>
+      <span class="PropertyPrice-module-scss-module__x__propertyPrice">€&nbsp;189.000</span>
+      <div class="sc-listing-card-footer">
+        <div class="sc-listing-card-footer-item sc-listing-card-footer-item-default">31 m²</div>
+        <div class="sc-listing-card-footer-item sc-listing-card-footer-item-main">€&nbsp;189.000</div>
+      </div>
     </li>
     """
 
@@ -1285,7 +1294,21 @@ class TestDerStandardCardParsing:
         assert title == "Haus in Villach"
         assert url == "https://immobilien.derstandard.at/detail/12345678"
         assert price == 189000.0
-        assert location == "9500 Villach Testgasse"
+        assert location == "9500 Villach , Testgasse"
+
+    def test_falls_back_to_the_price_next_to_the_address(self, hm):
+        html = self.HTML.replace("sc-listing-card-footer-item-main", "")
+        price = hm.DerStandardScraper(session=None)._parse_cards(html)[0][3]
+        assert price == 189000.0
+
+    def test_skips_a_card_without_a_title_link(self, hm):
+        html = self.HTML.replace(
+            '<a class="sc-listing-card-title-stretched-link" href="/detail/12345678">'
+            "Haus in Villach</a>",
+            "Haus in Villach",
+        )
+        assert "stretched-link" not in html
+        assert hm.DerStandardScraper(session=None)._parse_cards(html) == []
 
 
 class TestRaiffeisenCardParsing:
@@ -1705,7 +1728,7 @@ class TestSiteBlacklist:
             "9999 Musterstadt, 22. Bezirk, Musterweg",  # willhaben
             "9999 Musterstadt, Musterweg",  # Lystio, Immodirekt
             "Musterweg, 9999 Musterstadt",  # ImmoScout24, Immobilien.net
-            "9999 Musterstadt MUSTERWEG 5",  # DerStandard
+            "9999 Musterstadt , MUSTERWEG 5",  # DerStandard
         ):
             assert self._at_site(hm, location), location
 

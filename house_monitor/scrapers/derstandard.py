@@ -21,11 +21,15 @@ class DerStandardScraper:
     """
     immobilien.derstandard.at house listings (HTML, paginated).
     Listing cards: <li class="sc-listing-card ...">
-    Link/ID:  <a class="sc-listing-card-content-background-link" href="/detail/XXXXXXXX">
-    Title:    <div class="sc-listing-card-title ...">
+    Title:    <h2 class="sc-listing-card-title ...">
+    Link/ID:  the title's <a class="sc-listing-card-title-stretched-link" href="/detail/XXXXXXXX">
     Address:  <span class="property-address"> (zip + city, then the street)
-    Price:    <span class="ResultItemPrice-module-scss-module__...">€&nbsp;3.290</span>
-              Fallback: <div class="sc-listing-card-footer-item-main">€&nbsp;3.290</div>
+    Price:    <div class="sc-listing-card-footer-item-main">€&nbsp;3.290</div> (desktop view)
+              Fallback: <span class="PropertyPrice-module-scss-module__...">€&nbsp;3.290</span>
+    Until 2026-10-21 the link was a separate
+    <a class="sc-listing-card-content-background-link">, the title a <div> and
+    the price a ResultItemPrice span; after the switch every card was dropped
+    for its missing link (0 listings).
     Pagination: &page=2, &page=3 — stop when no listing cards found.
     Client-side price filter applied (server filter is reliable but we double-check).
     """
@@ -43,15 +47,12 @@ class DerStandardScraper:
         cards = soup.find_all("li", class_=lambda c: c and "sc-listing-card" in c)
         results = []
         for card in cards:
-            # Background link contains the detail URL and serves as the canonical link
-            bg_link = card.find(
-                "a", class_=lambda c: c and "sc-listing-card-content-background-link" in c
-            )
-            if not bg_link:
+            # The title's link holds the detail URL
+            title_el = card.find(class_="sc-listing-card-title")
+            link = title_el.find("a", href=True) if title_el else None
+            if not link:
                 continue
-            href = bg_link.get("href", "")
-            if not href:
-                continue
+            href = link["href"]
 
             # Normalize URL
             listing_url = href if href.startswith("http") else f"{DERSTANDARD_BASE_URL}{href}"
@@ -60,27 +61,21 @@ class DerStandardScraper:
             raw_id = href.rstrip("/").split("/")[-1].split("?")[0]
             listing_id = f"ds_{raw_id}"
 
-            # Title: div with class containing "sc-listing-card-title"
-            title_el = card.find("div", class_=lambda c: c and "sc-listing-card-title" in c)
-            title = (
-                title_el.get_text(strip=True) if title_el else bg_link.get("aria-label", "").strip()
-            )
+            title = title_el.get_text(strip=True)
             if not title:
                 title = f"DerStandard #{raw_id}"
 
-            # Price: first try the desktop price span (ResultItemPrice)
+            # Price: the footer item marked as "main" (desktop view)
             price = 0.0
-            price_el = card.find("span", class_=lambda c: c and "ResultItemPrice" in c)
+            price_el = card.find("div", class_="sc-listing-card-footer-item-main")
             if not price_el:
-                # Fallback: footer item marked as "main" (mobile view)
-                price_el = card.find(
-                    "div", class_=lambda c: c and "sc-listing-card-footer-item-main" in c
-                )
+                # Fallback: the price next to the address (mobile view)
+                price_el = card.find("span", class_=lambda c: c and "propertyPrice" in c)
             if price_el:
                 # Format: "€ 3.290" or "€ 12.000" — dot = thousands separator
                 price = parse_de_price(price_el.get_text(strip=True))
 
-            # Address (for the SITE_BLACKLIST check): "1220 Wien Street"
+            # Address (for the SITE_BLACKLIST check): "1220 Wien , Street"
             address = card.find("span", class_="property-address")
             location = address.get_text(" ", strip=True) if address else ""
 
