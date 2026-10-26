@@ -2001,13 +2001,13 @@ class TestScrapeAndNotifyRetryCollection:
 # ---------------------------------------------------------------------------
 # Every scraper flags itself incomplete on a fetch error, so the same-day
 # retry pass covers all sources — not just the few that used to hit broken
-# pipes (sources that timed out at 16:00 were otherwise skipped until the
+# pipes (sources that timed out at the daily run were otherwise skipped until the
 # next day's run).
 # ---------------------------------------------------------------------------
 
 
 class _TimeoutSession:
-    """Every request times out — the 16:00 concurrent-peak failure mode."""
+    """Every request times out — the daily run's concurrent-peak failure mode."""
 
     def get(self, url, **kwargs):
         return _RaisingContext(asyncio.TimeoutError())
@@ -2417,7 +2417,7 @@ class TestPartialLossFindings:
 
 
 class _FlakyOnceScraper(_OkScraper):
-    """Fails at 16:00, succeeds on the retry."""
+    """Fails at the daily run, succeeds on the retry."""
 
     def __init__(self):
         super().__init__([])
@@ -2427,6 +2427,30 @@ class _FlakyOnceScraper(_OkScraper):
         self.calls += 1
         self.incomplete = self.calls == 1
         return []
+
+
+class TestSecondsUntilDailyRun:
+    @staticmethod
+    def _wait_at(hm, monkeypatch, now):
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+
+        monkeypatch.setattr(hm, "datetime", _FixedNow)
+        return _new_monitor(hm)._seconds_until_daily_run()
+
+    def test_the_run_starts_at_15_00(self, hm):
+        assert hm.DAILY_RUN_HOUR == 15
+
+    def test_before_the_run_hour_it_waits_for_today(self, hm, monkeypatch):
+        wait = self._wait_at(hm, monkeypatch, datetime(2026, 10, 26, 14, 30))
+        assert wait == 30 * 60
+
+    def test_from_the_run_hour_on_it_waits_for_tomorrow(self, hm, monkeypatch):
+        assert self._wait_at(hm, monkeypatch, datetime(2026, 10, 26, 15, 0)) == 24 * 3600
+        wait = self._wait_at(hm, monkeypatch, datetime(2026, 10, 26, 16, 20))
+        assert wait == (22 * 60 + 40) * 60
 
 
 def test_memory_snapshot_never_raises(hm):

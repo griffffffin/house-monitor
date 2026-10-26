@@ -31,7 +31,7 @@ async def _get_with_retry(
 
     Deliberately NOT retried: non-200 statuses (the server answered; the
     callers' own status handling stays in charge) and timeouts (those show
-    up at the 16:00 concurrent peak, where piling on more 30s attempts
+    up at the daily run's concurrent peak, where piling on more 30s attempts
     would only make the run slower).
     """
     for attempt in range(1, attempts + 1):

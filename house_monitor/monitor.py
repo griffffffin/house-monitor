@@ -17,6 +17,7 @@ import aiohttp
 from .config import (
     BLACKLIST,
     BLACKLIST_UNLESS,
+    DAILY_RUN_HOUR,
     DATA_FILE,
     DUPLICATE_LOOKBACK_DAYS,
     EMAIL_CONFIG,
@@ -223,9 +224,9 @@ class HouseMonitor:
                 f"nem sikerült menteni a {DATA_FILE} fájlt ({health.format_error(e)})"
             )
 
-    def _seconds_until_1600(self) -> float:
+    def _seconds_until_daily_run(self) -> float:
         now = datetime.now()
-        target = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        target = now.replace(hour=DAILY_RUN_HOUR, minute=0, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
         return (target - now).total_seconds()
@@ -570,7 +571,7 @@ class HouseMonitor:
         return failed
 
     def _start_of_day(self) -> List[Dict[str, Any]]:
-        """Record today's run and return the error alerts due in today's 16:00
+        """Record today's run and return the error alerts due in today's main
         email: what the last end-of-day check left pending, plus a missed-run
         notice once the monitor hadn't run for HEALTH_MIN_CONSECUTIVE+ days."""
         self.day_late = []
@@ -615,7 +616,7 @@ class HouseMonitor:
         """Once a day, after the same-day retries: diagnose the sources (see
         health.py) and count them, together with today's own errors, into
         multi-day streaks; the streaks of HEALTH_MIN_CONSECUTIVE+ days become
-        the alerts of the next 16:00 email. Never raises — a failing check
+        the alerts of the next day's main email. Never raises — a failing check
         must not take the monitoring loop down with it."""
         try:
             today = date.today().isoformat()
@@ -695,14 +696,14 @@ class HouseMonitor:
         state["count_history"] = history
         for scraper in self.day_late:
             findings[f"late:{self._display_name(scraper)}"] = (
-                "16:00-kor hibával állt le, csak az újrapróbálásból jött meg "
-                "(késve, külön emailben)"
+                f"{DAILY_RUN_HOUR}:00-kor hibával állt le, csak az újrapróbálásból "
+                "jött meg (késve, külön emailben)"
             )
 
     @staticmethod
     def _memory_snapshot() -> str:
         """The process's resident and swapped-out memory, from /proc (Linux).
-        Logged at the start of each daily run: the first requests of the 16:00
+        Logged at the start of each daily run: the first requests of the daily
         run time out together while the process — idle for 24 hours, partly
         swapped out — pages back in, so this tells whether swap is the cause."""
         try:
@@ -713,7 +714,7 @@ class HouseMonitor:
             return f"unavailable ({type(e).__name__})"
 
     async def _daily_run(self, scrapers: List[Any]) -> List[Any]:
-        """The 16:00 run with its same-day retries; returns the sources still
+        """The daily run with its same-day retries; returns the sources still
         failing at the end."""
         logging.info(f"Process memory at run start: {self._memory_snapshot()}")
         alerts = self._start_of_day()
@@ -721,7 +722,7 @@ class HouseMonitor:
         failed = await self._scrape_and_notify(scrapers, alerts=alerts)
         if alerts and self.last_email_ok:
             self._clear_reported_alerts()
-        failed_at_1600 = list(failed)
+        failed_at_start = list(failed)
 
         # Same-day retry: re-run ONLY the failed sources after a wait. The
         # main email above already went out from the healthy sources,
@@ -744,7 +745,7 @@ class HouseMonitor:
             log_notice(
                 f"Still incomplete after retries: {names} — giving up until the next scheduled run."
             )
-        self.day_late = [scraper for scraper in failed_at_1600 if scraper not in failed]
+        self.day_late = [scraper for scraper in failed_at_start if scraper not in failed]
         return failed
 
     @staticmethod
@@ -757,7 +758,7 @@ class HouseMonitor:
         # "Network is unreachable", and the connector's 10 s DNS cache hands the
         # same answer to fetch_text's retries (2026-10-20/21: up to 11 sources
         # at 16:00, behind a slow systemd-resolved stub). AF_INET asks for A
-        # records only, so the 16:00 burst sends half the queries, and a late
+        # records only, so the daily run's burst sends half the queries, and a late
         # answer ends in a DNS error, which is not cached and gets retried.
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
         return aiohttp.ClientSession(
@@ -812,7 +813,7 @@ class HouseMonitor:
 
         try:
             while True:
-                wait = self._seconds_until_1600()
+                wait = self._seconds_until_daily_run()
                 logging.info(f"Waiting {wait / 3600:.2f} hours until next run...")
                 await asyncio.sleep(wait)
 

@@ -22,7 +22,7 @@ The same end-of-day check also counts the monitor's own errors of the day
 (email not sent, DB not saved, the daily run or this check crashing). Every
 finding keeps a streak of consecutive days; once a streak reaches
 HEALTH_MIN_CONSECUTIVE days it goes into the "HIBÁK" section of the next
-16:00 email (subject flagged with "hiba"), every day while it lasts. The
+day's main email (subject flagged with "hiba"), every day while it lasts. The
 monitor not having run at all for that many days is reported the same way
 when it starts again.
 """
@@ -199,7 +199,7 @@ def save_state(path: str, state: Dict[str, Any]) -> None:
 
 
 def email_subject(listings: int, alerts: int) -> str:
-    """The 16:00 email's subject — it names "hiba" whenever errors are in it."""
+    """The main daily email's subject — it names "hiba" whenever errors are in it."""
     if not alerts:
         return f"Ingatlanok: {listings} db"
     if not listings:
