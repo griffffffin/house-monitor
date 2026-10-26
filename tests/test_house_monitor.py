@@ -13,7 +13,9 @@ hand-built HTML/data fixtures.
 
 import asyncio
 import json
+import os
 import socket
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -2451,6 +2453,32 @@ class TestSecondsUntilDailyRun:
         assert self._wait_at(hm, monkeypatch, datetime(2026, 10, 26, 15, 0)) == 24 * 3600
         wait = self._wait_at(hm, monkeypatch, datetime(2026, 10, 26, 16, 20))
         assert wait == (22 * 60 + 40) * 60
+
+    @pytest.fixture
+    def vienna_time(self):
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "Europe/Vienna"
+        time.tzset()
+        yield
+        if old is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+    def test_a_wait_across_the_autumn_dst_switch_is_an_hour_longer(
+        self, hm, monkeypatch, vienna_time
+    ):
+        # 18:00 CEST -> 15:00 CET the next day: 22 real hours, not 21
+        wait = self._wait_at(hm, monkeypatch, datetime(2026, 10, 24, 18, 0))
+        assert wait == 22 * 3600
+
+    def test_a_wait_across_the_spring_dst_switch_is_an_hour_shorter(
+        self, hm, monkeypatch, vienna_time
+    ):
+        # 18:00 CET -> 15:00 CEST the next day: 20 real hours, not 21
+        wait = self._wait_at(hm, monkeypatch, datetime(2027, 3, 27, 18, 0))
+        assert wait == 20 * 3600
 
 
 def test_memory_snapshot_never_raises(hm):

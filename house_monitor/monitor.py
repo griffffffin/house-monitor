@@ -229,7 +229,11 @@ class HouseMonitor:
         target = now.replace(hour=DAILY_RUN_HOUR, minute=0, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
-        return (target - now).total_seconds()
+        # Both are naive local times; .timestamp() gives each its own UTC
+        # offset, so a wait across a DST switch is the real duration. Plain
+        # subtraction was an hour off: on 2026-10-25 (CEST -> CET) the loop
+        # woke an hour early and ran twice that day.
+        return target.timestamp() - now.timestamp()
 
     def _titles_similar(self, t1: str, t2: str) -> bool:
         def _norm(s: str) -> str:
