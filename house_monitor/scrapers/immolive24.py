@@ -15,8 +15,10 @@ from ..config import (
     IMMOLIVE24_SEARCH_DATA,
     IMMOLIVE24_SEARCH_URL,
 )
-from ..fetch import HTTPStatusError
+from ..fetch import HTTPStatusError, fetch_text, post_text
 from ..models import Listing, parse_de_price
+
+_FORM_HEADERS = {"Content-Type": "application/x-www-form-urlencoded"}
 
 
 class ImmoLive24Scraper:
@@ -89,33 +91,33 @@ class ImmoLive24Scraper:
         page = 1
 
         while True:
+            # Both requests retry a dropped connection or a DNS lookup that
+            # timed out: the latter hit page 1 at the daily run's start on
+            # 2026-10-28..30, and the source came through only in the retry
+            # pass. Repeating the search POST is harmless — it only sets the
+            # session's filter again.
             try:
                 if page == 1:
                     logging.info(f"ImmoLive24.at: fetching {IMMOLIVE24_SEARCH_URL}")
-                    async with self.session.post(
+                    status, html_text = await post_text(
+                        self.session,
                         IMMOLIVE24_SEARCH_URL,
                         data=IMMOLIVE24_SEARCH_DATA,
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                        headers=_FORM_HEADERS,
                         timeout=aiohttp.ClientTimeout(total=30),
-                    ) as resp:
-                        if resp.status != 200:
-                            logging.warning(f"ImmoLive24.at: HTTP {resp.status} – page {page}")
-                            break
-                        html_text = await resp.text()
+                    )
                 else:
                     url = f"{IMMOLIVE24_BASE_URL}/immobilien/search-results/index{page}.html"
                     logging.info(f"ImmoLive24.at: fetching {url}")
-                    async with self.session.get(
-                        url,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as resp:
-                        if resp.status != 200:
-                            logging.warning(f"ImmoLive24.at: HTTP {resp.status} – page {page}")
-                            break
-                        html_text = await resp.text()
+                    status, html_text = await fetch_text(
+                        self.session, url, timeout=aiohttp.ClientTimeout(total=30)
+                    )
             except Exception as e:
                 logging.error(f"ImmoLive24.at: fetch error {type(e).__name__}: {e}")
                 self.incomplete = True
+                break
+            if status != 200:
+                logging.warning(f"ImmoLive24.at: HTTP {status} – page {page}")
                 break
 
             page_cards = self._parse_cards(html_text)
@@ -159,13 +161,13 @@ class ImmoLive24Scraper:
         the kaufpreis fields), parsed like a normal page — for the daily source
         health check (house_monitor/health.py). The POST also resets the
         session-side filter, which the next fetch_listings() sets again anyway."""
-        async with self.session.post(
+        status, html_text = await post_text(
+            self.session,
             IMMOLIVE24_SEARCH_URL,
             data=IMMOLIVE24_PROBE_DATA,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers=_FORM_HEADERS,
             timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                raise HTTPStatusError(resp.status)
-            html_text = await resp.text()
+        )
+        if status != 200:
+            raise HTTPStatusError(status)
         return self._parse_cards(html_text)

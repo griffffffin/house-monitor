@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import time
+import types
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -28,7 +29,7 @@ from bs4 import BeautifulSoup
 from house_monitor import health as _health
 from house_monitor import monitor as _hm_module
 from house_monitor import scrapers as _scrapers_module
-from house_monitor.fetch import HTTPStatusError, fetch_bytes, fetch_text
+from house_monitor.fetch import HTTPStatusError, fetch_bytes, fetch_text, post_text
 
 
 @pytest.fixture(scope="session")
@@ -761,6 +762,32 @@ class TestImmoLive24CardParsing:
         assert len(cards) == 1
         listing_id, title, url, price = cards[0]
         assert title == "Haus, 1234, Ort"
+
+    def test_search_post_survives_a_dns_timeout(self, hm, monkeypatch):
+        # 2026-10-28..30: the daily run's first lookup of the host timed out
+        # and the source only came through in the retry pass half an hour later.
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        pages = {"post": self.HTML, "get": ""}  # page 2 is empty: the end
+
+        class _DnsHiccupSession:
+            calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append(("post", kwargs.get("data")))
+                if len(self.calls) == 1:
+                    return _RaisingContext(_dns_timeout("at.immolive24.com"))
+                return _FakeResponse(body=pages["post"])
+
+            def get(self, url, **kwargs):
+                self.calls.append(("get", url))
+                return _FakeResponse(body=pages["get"])
+
+        session = _DnsHiccupSession()
+        scraper = hm.ImmoLive24Scraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
+        assert [listing.id for listing in listings] == ["il24_854297"]
+        assert scraper.incomplete is False
+        assert [call[0] for call in session.calls] == ["post", "post", "get"]
 
 
 class TestDingDongCardParsing:
@@ -1942,20 +1969,43 @@ class _RaisingContext:
         return False
 
 
-class _FlakySession:
-    """session.get() fails with a connection error the first `failures` times."""
+def _dns_timeout(host):
+    """The error aiohttp raised on the Pi when a lookup timed out (its
+    ClientConnectorDNSError subclass is missing from the pinned aiohttp)."""
+    key = types.SimpleNamespace(host=host, port=443, ssl=True)
+    return aiohttp.ClientConnectorError(key, OSError(None, "Timeout while contacting DNS servers"))
 
-    def __init__(self, failures, status=200, body="ok"):
+
+async def _no_sleep(*args, **kwargs):
+    return None
+
+
+class _FlakySession:
+    """session.get()/post() fail with a connection error the first `failures`
+    times; `error` builds the error (a broken pipe by default)."""
+
+    def __init__(self, failures, status=200, body="ok", error=None):
         self.failures = failures
         self.status = status
         self.body = body
+        self.error = error or (lambda: aiohttp.ClientOSError(32, "Broken pipe"))
         self.calls = 0
+        self.methods = []
+        self.kwargs = []
+
+    def _answer(self, method, kwargs):
+        self.calls += 1
+        self.methods.append(method)
+        self.kwargs.append(kwargs)
+        if self.calls <= self.failures:
+            return _RaisingContext(self.error())
+        return _FakeResponse(status=self.status, body=self.body)
 
     def get(self, url, **kwargs):
-        self.calls += 1
-        if self.calls <= self.failures:
-            return _RaisingContext(aiohttp.ClientOSError(32, "Broken pipe"))
-        return _FakeResponse(status=self.status, body=self.body)
+        return self._answer("GET", kwargs)
+
+    def post(self, url, **kwargs):
+        return self._answer("POST", kwargs)
 
 
 class TestFetchText:
@@ -1989,6 +2039,25 @@ class TestFetchText:
         assert raw == "Grünen".encode("utf-8")
         assert charset == "iso-8859-1"
         assert session.calls == 2
+
+    def test_retries_a_dns_timeout(self):
+        session = _FlakySession(failures=1, error=lambda: _dns_timeout("example.at"))
+        status, body = asyncio.run(fetch_text(session, "http://x", backoff=0))
+        assert (status, body) == (200, "ok")
+        assert session.calls == 2
+
+    def test_post_text_retries_with_the_same_form(self):
+        session = _FlakySession(failures=2, error=lambda: _dns_timeout("example.at"))
+        status, body = asyncio.run(post_text(session, "http://x", data="a=1", backoff=0))
+        assert (status, body) == (200, "ok")
+        assert session.methods == ["POST", "POST", "POST"]
+        assert [kwargs["data"] for kwargs in session.kwargs] == ["a=1"] * 3
+
+    def test_post_text_gives_up_after_all_attempts_and_reraises(self):
+        session = _FlakySession(failures=99)
+        with pytest.raises(aiohttp.ClientConnectionError):
+            asyncio.run(post_text(session, "http://x", attempts=3, backoff=0))
+        assert session.calls == 3
 
 
 # ---------------------------------------------------------------------------
