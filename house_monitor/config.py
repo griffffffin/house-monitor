@@ -206,10 +206,17 @@ DINGDONG_URL = (
 )
 
 # used by: SonnbergerScraper
-SONNBERGER_BASE_URL = "https://sonnberger.co.at"
-# WordPress + Houzez theme, no server-side price filter parameter -> filtering
-# happens entirely client-side (the site only sorts ascending by price).
-SONNBERGER_URL = f"{SONNBERGER_BASE_URL}/wp/immobilienart/haeuser/?sortby=a_price"
+SONNBERGER_BASE_URL = "https://sonnberger.at"
+# The broker's new site (since about 2026-10-28; the old sonnberger.co.at/wp
+# pages redirect to it) filters server-side: houses for sale in the price
+# range (both ends inclusive), cheapest first.
+SONNBERGER_SEARCH_URL = (
+    f"{SONNBERGER_BASE_URL}/immobilien/"
+    "?sb_transaction=buy&sb_property_category=haus&sb_sort=price_asc"
+)
+SONNBERGER_URL = (
+    f"{SONNBERGER_SEARCH_URL}&sb_price_min={EUR_PRICE_FROM}&sb_price_max={EUR_PRICE_TO}"
+)
 
 # used by: LystioScraper
 LYSTIO_BASE_URL = "https://lystio.at"
@@ -388,7 +395,7 @@ HEALTH_COVERAGE_MIN_RATIO = 0.8
 # The real search URLs carry 3000-70000 € server-side, so a working site can
 # legitimately return 0 results there for weeks; the unfiltered page can't be
 # empty unless the site or our parser broke. Sources whose normal URL has no
-# server-side price filter (Goldgrube, Sonnberger, HegerReal) reuse it.
+# server-side price filter (Goldgrube, HegerReal) reuse it.
 IMMOSCOUT_PROBE_URL = (
     "https://www.immobilienscout24.at/regional/oesterreich/haus-kaufen/geringster-preis-zuerst"
 )
@@ -437,4 +444,5 @@ DINGDONG_PROBE_URL = (
     "?field_inserent_value=All&field_kategorie_tid=5&field_miete_kauf_value=kauf"
     "&order=field_preis&sort=asc"
 )
+SONNBERGER_PROBE_URL = SONNBERGER_SEARCH_URL
 HEUTE_PROBE_URL = HEUTE_SEARCH_URL

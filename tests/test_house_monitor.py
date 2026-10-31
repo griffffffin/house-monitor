@@ -445,10 +445,10 @@ class TestBuildEmailBody:
 
     def test_listing_shows_console_display_name_inline(self, hm):
         monitor = _new_monitor(hm)
-        listing = self._listing(hm, id="a", title="House", price=10000.0, source="sonnberger.co.at")
+        listing = self._listing(hm, id="a", title="House", price=10000.0, source="sonnberger.at")
         body = monitor._build_email_body([listing])
         assert "House (Sonnberger)" in body
-        assert "sonnberger.co.at" not in body
+        assert "sonnberger.at" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -793,41 +793,122 @@ class TestDingDongCardParsing:
 
 
 class TestSonnbergerCardParsing:
-    HTML = """
-    <div class="item-listing-wrap hz-item-gallery-js card">
-      <span class="hz-show-lightbox-js" data-listid="43433" data-toggle="tooltip"></span>
-      <div class="item-body">
-        <h2 class="item-title">
-          <a href="https://sonnberger.co.at/wp/immobilien/waldnah-haus/">WALDNAH – Haus mit großem Grund</a>
-        </h2>
-        <ul class="item-price-wrap hide-on-list"><li class="item-price">€ 278.000</li></ul>
-      </div>
-    </div>
-    """
+    """sonnberger.at/immobilien — the broker's new site (since ~2026-10-28)."""
 
-    def test_extracts_id_title_url_price(self, hm):
-        scraper = hm.SonnbergerScraper(session=None)
-        cards = scraper._parse_cards(self.HTML)
-        assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
-        assert listing_id == "sb_43433"
-        assert title == "WALDNAH – Haus mit großem Grund"
-        assert url == "https://sonnberger.co.at/wp/immobilien/waldnah-haus/"
-        assert price == 278000.0
-
-    def test_reserved_status_has_no_digits_parses_to_zero(self, hm):
-        html = """
-        <div class="item-listing-wrap">
-          <span data-listid="40923"></span>
-          <h2 class="item-title"><a href="https://sonnberger.co.at/wp/immobilien/summer-breeze/">SUMMER BREEZE</a></h2>
-          <ul class="item-price-wrap hide-on-list"><li class="item-price">RESERVIERT</li></ul>
-        </div>
+    @staticmethod
+    def _card(estate_id, name, subtitle, price, status="available", label="Zu kaufen"):
+        return f"""
+        <article class="sb-estate-card" data-sb-estate-id="{estate_id}">
+          <a class="sb-estate-card__image" href="https://sonnberger.at/immobilien/{estate_id}/">
+            <span class="sb-estate-card__status sb-estate-card__status--{status}">{label}</span>
+          </a>
+          <div class="sb-estate-card__body">
+            <p class="sb-estate-card__location">4400 Steyr</p>
+            <h2 id="sb-estate-title-{estate_id}">
+              <a href="https://sonnberger.at/immobilien/{estate_id}/">
+                <span class="sb-estate-card__title-name">{name}</span>
+                <span class="sb-estate-card__title-subtitle">{subtitle}</span>
+              </a>
+            </h2>
+            <p class="sb-estate-card__type">Kaufen · Einfamilienhaus</p>
+            <div class="sb-estate-card__facts" role="list">
+              <div role="listitem"><span class="sb-estate-card__fact-label">Wohnfläche</span>
+                <strong>121 m²</strong></div>
+            </div>
+            <div class="sb-estate-card__footer">
+              <p class="sb-estate-card__price">{price}</p>
+              <p class="sb-estate-card__reference">RSI-26-7206</p>
+            </div>
+          </div>
+        </article>
         """
-        scraper = hm.SonnbergerScraper(session=None)
-        cards = scraper._parse_cards(html)
-        assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
-        assert price == 0.0
+
+    @staticmethod
+    def _page(cards, next_page=None):
+        more = (
+            f'<a class="sb-button" data-sb-load-more data-next-page="{next_page}" '
+            f'href="https://sonnberger.at/immobilien/?sb_page={next_page}">Weitere</a>'
+            if next_page
+            else ""
+        )
+        return f'<div id="sb-estate-results">{"".join(cards)}</div>{more}'
+
+    def test_extracts_id_title_url_price_location(self, hm):
+        html = self._page(
+            [self._card("900184", "ANPACKEN", "Sanierungshaus mit Garten", "€ 17.000")]
+        )
+        cards = hm.SonnbergerScraper(session=None)._parse_cards(html)
+        assert cards == [
+            (
+                "sb_900184",
+                "ANPACKEN – Sanierungshaus mit Garten",
+                "https://sonnberger.at/immobilien/900184/",
+                17000.0,
+                "4400 Steyr",
+            )
+        ]
+
+    def test_price_on_request_parses_to_zero(self, hm):
+        html = self._page([self._card("65", "GRUND", "Baugrund", "Preis auf Anfrage")])
+        (card,) = hm.SonnbergerScraper(session=None)._parse_cards(html)
+        assert card[3] == 0.0
+
+    def test_reserved_cards_are_left_out_but_an_offer_stays(self, hm):
+        # The old site showed "Reserviert" instead of the price, so reserved
+        # houses were never saved and came through once for sale again; the new
+        # cards keep the price, so the status has to be read.
+        html = self._page(
+            [
+                self._card("141", "RESERVIERT", "Haus", "€ 29.300", "reserved", "Reserviert"),
+                self._card(
+                    "900114", "SEENAH", "Reihenhaus", "€ 42.800", "offer", "Kaufanbot im Haus"
+                ),
+            ]
+        )
+        cards = hm.SonnbergerScraper(session=None)._parse_cards(html)
+        assert [card[0] for card in cards] == ["sb_900114"]
+
+    def test_follows_the_load_more_pages_and_drops_their_repeats(self, hm):
+        # ?sb_page=N returns the first 12·N cards: every page repeats the earlier ones.
+        from house_monitor.config import SONNBERGER_URL
+
+        first = self._card("1", "EINS", "Haus", "€ 20.000")
+        second = self._card("2", "ZWEI", "Haus", "€ 30.000")
+        pages = {
+            SONNBERGER_URL: self._page([first], next_page=2),
+            "https://sonnberger.at/immobilien/?sb_page=2": self._page([first, second]),
+        }
+
+        class _PagedSession:
+            requested = []
+
+            def get(self, url, **kwargs):
+                self.requested.append(url)
+                return _FakeResponse(body=pages[url])
+
+        session = _PagedSession()
+        scraper = hm.SonnbergerScraper(session=session)
+        listings = asyncio.run(scraper.fetch_listings())
+        assert [listing.id for listing in listings] == ["sb_1", "sb_2"]
+        assert all(listing.location == "4400 Steyr" for listing in listings)
+        assert session.requested == list(pages)
+        assert scraper.incomplete is False
+
+    def test_search_filters_houses_for_sale_in_the_price_range(self):
+        from house_monitor.config import (
+            EUR_PRICE_FROM,
+            EUR_PRICE_TO,
+            SONNBERGER_PROBE_URL,
+            SONNBERGER_URL,
+        )
+
+        assert "sb_property_category=haus" in SONNBERGER_URL
+        assert "sb_transaction=buy" in SONNBERGER_URL
+        assert f"sb_price_min={EUR_PRICE_FROM}" in SONNBERGER_URL
+        assert f"sb_price_max={EUR_PRICE_TO}" in SONNBERGER_URL
+        # The probe is the same search without the price range.
+        assert "sb_price" not in SONNBERGER_PROBE_URL
+        assert SONNBERGER_URL.startswith(SONNBERGER_PROBE_URL)
 
 
 class TestLystioApiParsing:

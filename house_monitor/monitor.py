@@ -93,7 +93,7 @@ SCRAPER_SUMMARY_LABELS = {
     "LystioScraper": ("Lystio", "listings"),
 }
 
-# Listing.source (the raw, per-scraper value, e.g. "sonnberger.co.at") ->
+# Listing.source (the raw, per-scraper value, e.g. "sonnberger.at") ->
 # the short display name already used on the console (SCRAPER_SUMMARY_LABELS
 # values). We use the same names in the email body's source headers, to stay
 # consistent with the console summary.
@@ -116,7 +116,7 @@ SOURCE_DISPLAY_NAMES = {
     "goldgrube.at": "Goldgrube",
     "immolive24.at": "ImmoLive24",
     "ding-dong.at": "DingDong",
-    "sonnberger.co.at": "Sonnberger",
+    "sonnberger.at": "Sonnberger",
     "hegerreal.at": "HegerReal",
     "heute.at": "Heute.at",
     "lystio.at": "Lystio",
