@@ -70,6 +70,14 @@ SITE_BLACKLIST: list[tuple[str, str, tuple[str, ...]]] = [
     # with the words its units' titles use; the houses by the lake, the
     # village and the Reihersiedlung of Apetlon (also 7161) stay.
     ("7161", "", ("mobilheim", "mobilwohnheim", "wohnmobil", "campingplatz")),
+    # The leisure site of the FKK Sportliga Linz, a naturist club, at
+    # Innbachstraße 1, 4072 Alkoven: the club shuts the water off in the
+    # whole site for the winter, and its huts are used from April to October.
+    # The street itself can't be the key: Innbachstraße runs on for about
+    # 3 km past ordinary houses (nos. 2-43). The site's ads name the club in
+    # their address ("Freizeitgelände der FKK Sportliga-Linz"), so the club's
+    # name stands in for the street.
+    ("4072", "Sportliga", ()),
 ]
 
 # Listings we skip but do NOT persist to the JSON database — if a "reserved"
