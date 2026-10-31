@@ -1642,33 +1642,69 @@ class TestImmobilienDeApiParsing:
 
 
 class TestFindheimCardParsing:
-    HTML = """
-    <div class="group overflow-hidden border rounded-3xl">
-      <a href="/de/immobilie/haus-mit-garten-abcd1234">
-        <h3>Haus mit Garten</h3>
-        <p class="font-semibold text-lg">€ 59.999</p>
-      </a>
-    </div>
-    """
+    """The 2026-10-31 markup: a div.group with a photo link and a text link."""
 
-    def test_extracts_id_title_url_price(self, hm):
-        scraper = hm.FindheimScraper(session=None)
-        cards = scraper._parse_cards(self.HTML)
-        assert len(cards) == 1
-        listing_id, title, url, price = cards[0]
-        assert listing_id == "fh_abcd1234"
-        assert title == "Haus mit Garten"
-        assert url == "https://findheim.at/de/immobilie/haus-mit-garten-abcd1234"
-        assert price == 59999.0
-
-    def test_card_missing_overflow_hidden_class_is_ignored(self, hm):
-        html = """
-        <div class="group border rounded-md">
-          <a href="/de/immobilie/x"><h3>X</h3><p class="font-semibold">€ 1</p></a>
+    @staticmethod
+    def _card(slug, title, price, heading="Haus kaufen in 7522 Strem"):
+        href = f"/de/immobilie/{slug}"
+        return f"""
+        <div class="group flex flex-col gap-3">
+          <div class="relative overflow-hidden rounded-2xl bg-gray-100 aspect-4/3">
+            <a class="isolate block size-full" href="{href}"><img alt=""/></a>
+            <span class="group size-9 rounded-full" title="Immobilie merken"></span>
+          </div>
+          <a class="flex-1 flex flex-col gap-1 min-w-0 text-gray-900" href="{href}">
+            <p class="text-2xl font-bold tracking-tight tabular-nums">{price}</p>
+            <p class="font-medium tabular-nums">2 Zimmer · 40 m² · Grund 291 m²</p>
+            <h2>{heading}</h2>
+            <p class="text-sm text-gray-600 truncate">{title}</p>
+          </a>
         </div>
         """
-        scraper = hm.FindheimScraper(session=None)
-        assert scraper._parse_cards(html) == []
+
+    def test_extracts_id_title_url_price_location(self, hm):
+        html = self._card("haus-mit-garten-abcd1234", "Haus mit Garten", "€ 59.999")
+        cards = hm.FindheimScraper(session=None)._parse_cards(html)
+        assert cards == [
+            (
+                "fh_abcd1234",
+                "Haus mit Garten",
+                "https://findheim.at/de/immobilie/haus-mit-garten-abcd1234",
+                59999.0,
+                "7522 Strem",
+            )
+        ]
+
+    def test_the_price_is_not_read_from_the_title(self, hm):
+        # Titles can carry a price of their own ("… um nur € 21.900,-").
+        html = self._card("ferienhaus-590a47ae", "Ferienhaus um nur € 19.900,-", "€ 21.900")
+        (card,) = hm.FindheimScraper(session=None)._parse_cards(html)
+        assert card[3] == 21900.0
+
+    def test_an_ad_without_an_address_gets_no_location(self, hm):
+        html = self._card("efh-12345678", "EFH", "€ 55.000", heading="Haus kaufen in keine Angabe")
+        (card,) = hm.FindheimScraper(session=None)._parse_cards(html)
+        assert card[4] == ""
+        html = self._card(
+            "kraftplatz-ead4a1ad",
+            "Kraftplatz",
+            "€ 59.000",
+            heading="Freizeitimmobilie kaufen in 4232 Hagenberg im Mühlkreis",
+        )
+        (card,) = hm.FindheimScraper(session=None)._parse_cards(html)
+        assert card[4] == "4232 Hagenberg im Mühlkreis"
+
+    def test_a_block_wrapping_several_listings_is_not_a_card(self, hm):
+        cards = self._card("eins-11111111", "Eins", "€ 10.000") + self._card(
+            "zwei-22222222", "Zwei", "€ 20.000"
+        )
+        html = f'<div class="group">{cards}</div>'
+        parsed = hm.FindheimScraper(session=None)._parse_cards(html)
+        assert [card[0] for card in parsed] == ["fh_11111111", "fh_22222222"]
+
+    def test_promoted_cards_are_skipped(self, hm):
+        html = self._card("werbung-33333333?utm_medium=advertisement", "Werbung", "€ 1.000")
+        assert hm.FindheimScraper(session=None)._parse_cards(html) == []
 
 
 class TestWillhabenJsonAdvertParsing:

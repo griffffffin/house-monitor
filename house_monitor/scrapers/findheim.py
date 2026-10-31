@@ -16,14 +16,16 @@ class FindheimScraper:
     """
     Findheim.at house listings (HTML, paginated).
     Listing links: <a href="/de/immobilie/slug-HASH">
-    Card: div.group whose class list includes both "overflow-hidden" and
-      "border" (the earlier "rounded-md" Tailwind class was replaced by
-      "rounded-3xl" in the site's 2026 redesign, and the old
-      z-[1]/right-0/bottom-0 price-container structure is gone too -
-      the price now comes from the <p class="font-semibold ...">€ X</p>
-      next to the title instead)
-    Price: <p class="font-semibold ...">€ 59.999</p> inside the card
-    Title: <h2> or <h3> inside the card
+    Card (2026-10-31 markup): div.group holding two links to the same
+      listing — the photo carousel and the text block. Any div.group whose
+      listing links all point to one listing counts, so the card no longer
+      hangs on Tailwind classes (the 07-01 redesign's "overflow-hidden" +
+      "border" moved to the inner photo frame, which made every card vanish).
+    Text block (the link that holds the <p>s):
+      price  p.font-bold ("€ 9.400"; the 07-01 markup: p.font-semibold)
+      facts  p.font-medium ("2 Zimmer · 40 m² · Grund 291 m²", unused)
+      h2     "Haus kaufen in 7522 Strem" -> the address (postcode + town)
+      title  p.truncate, the ad's own title (the 07-01 markup: h3)
     Pagination: &page=N
     """
 
@@ -36,26 +38,14 @@ class FindheimScraper:
 
     def _parse_cards(self, html_text: str) -> list:
         soup = BeautifulSoup(html_text, "lxml")
-
-        # Cards: divs with both "group" and "overflow-hidden" (and "border")
-        # in their class list - the old "rounded-md" check stopped working
-        # because the site redesign changed the corner-rounding class to
-        # "rounded-3xl" (see class docstring).
-        all_divs = soup.find_all("div", class_="group")
-        cards = [
-            d
-            for d in all_divs
-            if "overflow-hidden" in d.get("class", []) and "border" in d.get("class", [])
-        ]
-
         results = []
-        for card in cards:
-            # Find the main listing link (href="/de/immobilie/...")
-            # Skip advertisement cards (utm_medium=advertisement in href)
-            link = card.find("a", href=re.compile(r"/de/immobilie/"))
-            if not link:
+        for card in soup.find_all("div", class_="group"):
+            links = card.find_all("a", href=re.compile(r"/de/immobilie/"))
+            # Exactly one listing: not a card at all (no link), or a block
+            # wrapping several cards, otherwise.
+            if len({a["href"] for a in links}) != 1:
                 continue
-            href = link.get("href", "")
+            href = links[0]["href"]
             # Skip ad/promoted listings
             if "utm_medium=advertisement" in href or "utm_campaign=" in href:
                 continue
@@ -69,22 +59,30 @@ class FindheimScraper:
             slug = clean_href.rstrip("/").split("/")[-1]
             listing_id = f"fh_{slug[-8:]}" if len(slug) >= 8 else f"fh_{slug}"
 
-            # Title: <h3> is the actual listing title (h2 is generic "Haus zum Kauf in...")
-            h3 = card.find("h3")
-            h2 = card.find("h2")
-            title = (h3.get_text(strip=True) if h3 else None) or (
-                h2.get_text(strip=True) if h2 else slug
-            )
+            # The text block: the link with the <p>s (the other one is the photo)
+            body = next((a for a in links if a.find("p")), card)
 
-            # Price: <p class="font-semibold ...">€ 59.999</p> next to the
-            # title (the old z-[1]/right-0/bottom-0 price-container structure
-            # no longer exists, see class docstring)
+            # Title: the ad's own title (h2 is the generic "Haus kaufen in …")
+            title_el = body.find("p", class_="truncate") or card.find("h3")
+            heading = card.find("h2")
+            title = " ".join(title_el.get_text(" ", strip=True).split()) if title_el else ""
+            if not title:
+                title = heading.get_text(" ", strip=True) if heading else slug
+
             price = 0.0
-            price_el = card.find("p", class_=lambda c: c and "font-semibold" in c)
+            price_el = body.find("p", class_="font-bold") or body.find("p", class_="font-semibold")
             if price_el:
                 price = parse_de_price(price_el.get_text(strip=True))
 
-            results.append((listing_id, title, listing_url, price))
+            # Address (for the SITE_BLACKLIST check): "Haus kaufen in 7522 Strem"
+            # -> "7522 Strem"; "… in keine Angabe" (no address given) -> "".
+            location = ""
+            if heading:
+                _, _, place = heading.get_text(" ", strip=True).partition(" in ")
+                if place[:1].isdigit():
+                    location = place
+
+            results.append((listing_id, title, listing_url, price, location))
         return results
 
     async def fetch_listings(self) -> List[Listing]:
@@ -107,7 +105,7 @@ class FindheimScraper:
                 page_cards = self._parse_cards(html)
 
                 found_on_page = 0
-                for listing_id, title, listing_url, price in page_cards:
+                for listing_id, title, listing_url, price, location in page_cards:
                     if listing_id in seen_ids:
                         continue
                     seen_ids.add(listing_id)
@@ -122,6 +120,7 @@ class FindheimScraper:
                             source="findheim.at",
                             first_seen=now,
                             last_seen=now,
+                            location=location,
                         )
                     )
                     found_on_page += 1
