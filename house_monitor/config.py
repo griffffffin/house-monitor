@@ -3,7 +3,17 @@
 import os
 from urllib.parse import quote
 
-DATA_FILE = "seen-houses.json"
+# The project root (the directory above this package), from this file's own
+# path — a manual run keeps its state and log here.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The state files. Their directory is resolved at startup, not here
+# (house_monitor/startup.py): as a service the one writable place is the
+# state directory systemd passes in STATE_DIRECTORY, on a manual run it's
+# PROJECT_ROOT.
+DATA_FILE_NAME = "seen-houses.json"
+# One monitor per state directory: the lock lives with the state it guards.
+LOCK_FILE_NAME = "house-monitor.lock"
 
 BLACKLIST = [
     "urlaub",
@@ -101,12 +111,12 @@ TITLE_SUBSTRING_MIN_LEN = 20
 # twins always stay well inside the window.
 DUPLICATE_LOOKBACK_DAYS = 60
 
-DATA_FILE = f"/opt/house-monitor/{DATA_FILE}"
-
 if os.getenv("INVOCATION_ID"):  # Systemd service mode
+    # Only named in the log: the service logs to stdout, which systemd
+    # appends to this file (StandardOutput=append:...).
     LOG_FILE = "/var/log/house-monitor/service.log"
 else:
-    LOG_FILE = "/opt/house-monitor/house-monitor.log"
+    LOG_FILE = os.path.join(PROJECT_ROOT, "house-monitor.log")
 
 # SMTP credentials come from a shared environment file (several projects on
 # the same host use the same Gmail account) - see EnvironmentFile=/opt/secrets.env
@@ -373,8 +383,8 @@ GOLDGRUBE_URLS = [
 # daily checks; repeated every day while it stays broken.
 HEALTH_MIN_CONSECUTIVE = 2
 # Consecutive-failure counters + the date of the last check, kept next to the
-# seen-DB so a service restart doesn't reset the streak.
-HEALTH_STATE_FILE = os.path.join(os.path.dirname(DATA_FILE), "health-check-state.json")
+# seen-DB (in the state directory) so a service restart doesn't reset the streak.
+HEALTH_STATE_FILE_NAME = "health-check-state.json"
 # A probe that errors is retried this many times, this many seconds apart.
 HEALTH_PROBE_ATTEMPTS = 3
 HEALTH_PROBE_RETRY_DELAY = 5.0

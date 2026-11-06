@@ -1,13 +1,24 @@
-"""Entry point: acquires a lock file (to prevent overlapping runs) and starts HouseMonitor."""
+"""Entry point: runs the startup checks (house_monitor/startup.py), takes the
+lock and starts HouseMonitor.
+
+Exit codes: 1 — another monitor holds the lock; 78 (EX_CONFIG) — a
+configuration error: no usable state directory, or a lock file that can't
+be opened. The service unit doesn't restart on 78.
+"""
 
 import asyncio
-import fcntl
+import os
 import signal
 import sys
 
 from .monitor import HouseMonitor
-
-LOCK_FILE = "/tmp/house-monitor.lock"
+from .startup import (
+    EX_CONFIG,
+    AlreadyRunning,
+    ConfigError,
+    lock_exclusively,
+    run_startup_checks,
+)
 
 
 def _handle_sigterm(signum, frame) -> None:
@@ -18,24 +29,44 @@ def _handle_sigterm(signum, frame) -> None:
     raise KeyboardInterrupt()
 
 
-def main() -> None:
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+def _config_error(error: ConfigError) -> int:
+    print(
+        f"Configuration error: {error}. Exiting with {EX_CONFIG} (EX_CONFIG).",
+        file=sys.stderr,
+        flush=True,
+    )
+    return EX_CONFIG
 
+
+def main() -> int:
     try:
-        lock_fd = open(LOCK_FILE, "w")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
-        print("Another instance is already running (lock: /tmp/house-monitor.lock). Exiting.")
-        sys.exit(1)
+        startup = run_startup_checks(os.environ)
+    except ConfigError as e:
+        return _config_error(e)
 
-    monitor = HouseMonitor()
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    try:
+        lock_exclusively(startup.lock)
+    except AlreadyRunning:
+        startup.lock.close()
+        print(
+            f"Another instance is already running (lock: {startup.state.lock_file}). Exiting.",
+            flush=True,
+        )
+        return 1
+    except ConfigError as e:
+        startup.lock.close()
+        return _config_error(e)
+
+    monitor = HouseMonitor(startup.state)
     try:
         asyncio.run(monitor.run())
     except KeyboardInterrupt:
         print("\nMonitor stopped.")
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        startup.lock.close()  # releases the lock
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

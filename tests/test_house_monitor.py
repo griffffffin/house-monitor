@@ -12,9 +12,13 @@ hand-built HTML/data fixtures.
 """
 
 import asyncio
+import errno
+import fcntl
 import json
 import os
 import socket
+import subprocess
+import sys
 import time
 import types
 import urllib.error
@@ -27,8 +31,10 @@ import pytest
 from bs4 import BeautifulSoup
 
 from house_monitor import health as _health
+from house_monitor import main as _main
 from house_monitor import monitor as _hm_module
 from house_monitor import scrapers as _scrapers_module
+from house_monitor import startup as _startup
 from house_monitor.fetch import HTTPStatusError, fetch_bytes, fetch_text, post_text
 
 
@@ -37,9 +43,22 @@ def hm():
     return _hm_module
 
 
+# Where the monitors _new_monitor() makes keep their state: a directory that
+# doesn't exist, so a test that saves without choosing a path writes nothing
+# (the state_file fixture points them into the test's tmp_path instead).
+_MONITOR_STATE = {
+    "data_file": os.path.join(os.sep, "nonexistent-house-monitor-state", "seen-houses.json"),
+    "health_state_file": os.path.join(
+        os.sep, "nonexistent-house-monitor-state", "health-check-state.json"
+    ),
+}
+
+
 def _new_monitor(hm):
     """A HouseMonitor instance without __init__'s side effects (opening the log file)."""
     monitor = hm.HouseMonitor.__new__(hm.HouseMonitor)
+    monitor.data_file = _MONITOR_STATE["data_file"]
+    monitor.health_state_file = _MONITOR_STATE["health_state_file"]
     monitor.seen = {}
     monitor.session = None
     monitor.day_counts = {}
@@ -472,14 +491,11 @@ class TestDbRoundTrip:
         monitor.seen = {listing.id: listing}
 
         data_file = tmp_path / "roundtrip.json"
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
-        try:
-            asyncio.run(monitor._save_db())
-            reloaded = _new_monitor(hm)
-            asyncio.run(reloaded._load_db())
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(data_file)
+        asyncio.run(monitor._save_db())
+        reloaded = _new_monitor(hm)
+        reloaded.data_file = monitor.data_file
+        asyncio.run(reloaded._load_db())
 
         assert reloaded.seen["is24_1"].title == "Test house"
         assert reloaded.seen["is24_1"].price == 45000.0
@@ -500,13 +516,9 @@ class TestDbRoundTrip:
         monitor.seen = {listing.id: listing}
 
         data_file = tmp_path / "no_transient_fields.json"
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
-        try:
-            asyncio.run(monitor._save_db())
-            saved = json.loads(data_file.read_text(encoding="utf-8"))
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(data_file)
+        asyncio.run(monitor._save_db())
+        saved = json.loads(data_file.read_text(encoding="utf-8"))
 
         assert "price_changed" not in saved["is24_1"]
         assert "old_price" not in saved["is24_1"]
@@ -556,12 +568,8 @@ class TestLoadDbResilience:
         )
 
         monitor = _new_monitor(hm)
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
-        try:
-            asyncio.run(monitor._load_db())
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(data_file)
+        asyncio.run(monitor._load_db())
 
         assert set(monitor.seen.keys()) == {"good_1", "good_2"}
         assert monitor.seen["good_1"].price == 10000.0
@@ -592,12 +600,8 @@ class TestLoadDbResilience:
         )
 
         monitor = _new_monitor(hm)
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
-        try:
-            asyncio.run(monitor._load_db())
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(data_file)
+        asyncio.run(monitor._load_db())
 
         assert set(monitor.seen.keys()) == {"good_1"}
 
@@ -628,12 +632,8 @@ class TestSaveDbAtomic:
         data_file = tmp_path / "atomic.json"
         monitor = self._monitor_with_one_listing(hm)
 
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
-        try:
-            asyncio.run(monitor._save_db())
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(data_file)
+        asyncio.run(monitor._save_db())
 
         assert data_file.exists()
         assert not Path(f"{data_file}.tmp").exists()
@@ -643,17 +643,13 @@ class TestSaveDbAtomic:
         data_file.write_text('{"old": "data"}', encoding="utf-8")
         monitor = self._monitor_with_one_listing(hm)
 
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(data_file)
+        monitor.data_file = str(data_file)
 
         def _boom(*args, **kwargs):
             raise OSError("simulated error during save")
 
         monkeypatch.setattr(hm.os, "replace", _boom)
-        try:
-            asyncio.run(monitor._save_db())
-        finally:
-            hm.DATA_FILE = original_data_file
+        asyncio.run(monitor._save_db())
 
         # The existing file's contents stay intact — not truncated or emptied.
         assert data_file.read_text(encoding="utf-8") == '{"old": "data"}'
@@ -1912,13 +1908,13 @@ class TestSiteBlacklist:
 
     def test_site_ads_and_their_addressless_copies_stay_silent(self, hm, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, "SITE_BLACKLIST", [("9999", "Musterweg", ())])
-        monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
         make = TestScrapeAndNotifyRetryCollection._listing
         at_site = make(hm, "wh_1", "Ferienhaus am Teich", 30000.0, source="willhaben.at")
         at_site.location = "9999 Musterstadt, Musterweg"
         copy = make(hm, "fh_1", "Ferienhaus am Teich", 30000.0)  # this portal shows no address
         other = make(hm, "fh_2", "Haus am Waldrand", 30000.0)
         monitor = _new_monitor(hm)
+        monitor.data_file = str(tmp_path / "seen.json")
         monitor.notifier = _StubNotifier()
         # The address-less copy comes first: the order of the sources must not matter.
         asyncio.run(monitor._scrape_and_notify([_OkScraper([copy, other]), _OkScraper([at_site])]))
@@ -2154,12 +2150,8 @@ class TestScrapeAndNotifyRetryCollection:
         )
         crashed = _CrashingScraper()
 
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(tmp_path / "seen.json")
-        try:
-            failed = asyncio.run(monitor._scrape_and_notify([ok, partial, crashed]))
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(tmp_path / "seen.json")
+        failed = asyncio.run(monitor._scrape_and_notify([ok, partial, crashed]))
 
         # The crashed AND the partial scraper are queued for retry; the healthy
         # one is not.
@@ -2175,12 +2167,8 @@ class TestScrapeAndNotifyRetryCollection:
         monitor = _new_monitor(hm)
         monitor.notifier = _StubNotifier()
 
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(tmp_path / "seen.json")
-        try:
-            failed = asyncio.run(monitor._scrape_and_notify([_OkScraper([])]))
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(tmp_path / "seen.json")
+        failed = asyncio.run(monitor._scrape_and_notify([_OkScraper([])]))
 
         assert failed == []
         assert monitor.notifier.sent == []
@@ -2419,10 +2407,11 @@ def _today():
 
 
 @pytest.fixture
-def state_file(hm, tmp_path, monkeypatch):
+def state_file(tmp_path, monkeypatch):
+    """The health state file of the monitors _new_monitor() makes in this test."""
     path = tmp_path / "health.json"
-    monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(path))
-    monkeypatch.setattr(hm, "DATA_FILE", str(tmp_path / "seen.json"))
+    monkeypatch.setitem(_MONITOR_STATE, "health_state_file", str(path))
+    monkeypatch.setitem(_MONITOR_STATE, "data_file", str(tmp_path / "seen.json"))
     return path
 
 
@@ -2486,8 +2475,8 @@ class TestEndOfDayCheck:
 
     def test_a_crash_inside_the_check_never_propagates(self, hm, tmp_path, monkeypatch):
         # An unwritable state path makes save_state raise.
-        monkeypatch.setattr(hm, "HEALTH_STATE_FILE", str(tmp_path / "missing-dir" / "h.json"))
         monitor = _new_monitor(hm)
+        monitor.health_state_file = str(tmp_path / "missing-dir" / "h.json")
         asyncio.run(monitor._end_of_day_check([_ProbeScraper(cards=[])], []))  # must not raise
         assert "health_check" in monitor.today_errors
 
@@ -2714,13 +2703,220 @@ class TestScrapeAndNotifyDbUpdate:
         dropped = self._listing(hm, "heger_1", "Mobilheim mit Garten am Badesee", 18000.0)
         dropped.first_seen = recent
 
-        original_data_file = hm.DATA_FILE
-        hm.DATA_FILE = str(tmp_path / "seen.json")
-        try:
-            asyncio.run(monitor._scrape_and_notify([_OkScraper([dropped])]))
-        finally:
-            hm.DATA_FILE = original_data_file
+        monitor.data_file = str(tmp_path / "seen.json")
+        asyncio.run(monitor._scrape_and_notify([_OkScraper([dropped])]))
 
         assert monitor.notifier.sent == []  # hidden as a duplicate of wh_1
         assert monitor.seen["heger_1"].price == 18000.0
         assert monitor.seen["heger_1"].first_seen == "2026-07-23T16:00:00"
+
+
+# ---------------------------------------------------------------------------
+# Startup checks (house_monitor/startup.py): the state directory and
+# the lock
+# ---------------------------------------------------------------------------
+
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
+@pytest.fixture
+def service_env(tmp_path, monkeypatch):
+    """The environment systemd gives the service: INVOCATION_ID and an empty
+    state directory."""
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
+    monkeypatch.setenv("STATE_DIRECTORY", str(state))
+    # main() installs a SIGTERM handler; keep the test process's own.
+    monkeypatch.setattr(_main.signal, "signal", lambda *args: None)
+    return types.SimpleNamespace(state=state)
+
+
+@pytest.fixture
+def stub_monitor(monkeypatch):
+    """Replaces HouseMonitor in main(): records what it was given and
+    whether the lock was held while it "ran". Returns the instances made."""
+    made = []
+
+    class _StubMonitor:
+        def __init__(self, state):
+            self.state = state
+            self.lock_held = None
+            made.append(self)
+
+        async def run(self):
+            with open(self.state.lock_file, "a") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.lock_held = False
+                except BlockingIOError:
+                    self.lock_held = True
+
+    monkeypatch.setattr(_main, "HouseMonitor", _StubMonitor)
+    return made
+
+
+def _hold_lock(path):
+    """Another monitor's lock on `path` (flock: per open file, so this
+    process conflicts with itself too). Close the result to release it."""
+    holder = open(path, "a")
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return holder
+
+
+class TestStateDirectory:
+    def test_the_service_uses_state_directory(self, service_env):
+        assert _startup.resolve_state_dir(os.environ) == str(service_env.state)
+
+    def test_the_write_check_leaves_nothing_behind(self, service_env):
+        _startup.resolve_state_dir(os.environ)
+        assert os.listdir(service_env.state) == []
+
+    @pytest.mark.parametrize(
+        "value, problem",
+        [
+            (None, "is not set"),
+            ("", "is not set"),
+            ("state", "not an absolute path"),  # exists relative to the cwd
+            ("{state}:{other}", "several directories"),  # systemd's join of two
+            ("{missing}", "not an existing directory"),
+            ("{file}", "not an existing directory"),
+        ],
+        ids=["unset", "empty", "relative", "two-directories", "nonexistent", "a-file"],
+    )
+    def test_no_usable_state_directory_is_a_config_error(
+        self, service_env, stub_monitor, tmp_path, monkeypatch, capsys, value, problem
+    ):
+        other = tmp_path / "other"
+        other.mkdir()
+        (tmp_path / "a-file").write_text("", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        if value is None:
+            monkeypatch.delenv("STATE_DIRECTORY")
+        else:
+            monkeypatch.setenv(
+                "STATE_DIRECTORY",
+                value.format(
+                    state=service_env.state,
+                    other=other,
+                    missing=tmp_path / "missing",
+                    file=tmp_path / "a-file",
+                ),
+            )
+        with pytest.raises(_startup.ConfigError, match=f"STATE_DIRECTORY.*{problem}"):
+            _startup.resolve_state_dir(os.environ)
+        # No fallback anywhere: main() stops with EX_CONFIG.
+        assert _main.main() == 78
+        assert stub_monitor == []
+        assert "STATE_DIRECTORY" in capsys.readouterr().err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root can write a read-only directory")
+    def test_a_read_only_state_directory_is_a_config_error(self, service_env, stub_monitor):
+        service_env.state.chmod(0o500)
+        try:
+            with pytest.raises(_startup.ConfigError, match="not writable"):
+                _startup.resolve_state_dir(os.environ)
+            assert _main.main() == 78
+            assert stub_monitor == []
+        finally:
+            service_env.state.chmod(0o700)
+
+    def test_importing_the_package_runs_no_gate(self, monkeypatch):
+        # The tests and scripts/live_smoke_check.py import it in any environment.
+        monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
+        for name in ("STATE_DIRECTORY", "CREDENTIALS_DIRECTORY"):
+            monkeypatch.delenv(name, raising=False)
+        imported = subprocess.run(
+            [sys.executable, "-B", "-c", "import house_monitor.main, scripts.live_smoke_check"],
+            cwd=PROJECT_ROOT,
+            env=dict(os.environ),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert imported.returncode == 0, imported.stderr
+
+    def test_a_manual_run_keeps_its_state_in_the_project_root(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("STATE_DIRECTORY", "/somewhere/else")  # only the service reads it
+        assert _startup.resolve_state_dir(os.environ) == PROJECT_ROOT
+
+
+class TestStatePaths:
+    def test_every_state_file_is_in_the_state_directory(self, tmp_path):
+        paths = _startup.StatePaths.in_dir(str(tmp_path))
+        assert paths.data_file == str(tmp_path / "seen-houses.json")
+        assert paths.health_state_file == str(tmp_path / "health-check-state.json")
+        assert paths.lock_file == str(tmp_path / "house-monitor.lock")
+
+    def test_the_startup_checks_put_state_and_lock_in_the_state_directory(self, service_env):
+        startup = _startup.run_startup_checks(os.environ)
+        startup.lock.close()
+        state = str(service_env.state)
+        assert startup.state == _startup.StatePaths.in_dir(state)
+        assert startup.lock.name == os.path.join(state, "house-monitor.lock")
+
+    def test_the_monitor_writes_its_state_only_into_the_state_directory(
+        self, hm, service_env, monkeypatch
+    ):
+        monkeypatch.setattr(hm.HouseMonitor, "_setup_logging", lambda self: None)
+        state = _startup.StatePaths.in_dir(str(service_env.state))
+        monitor = hm.HouseMonitor(state)
+        monitor.seen = {
+            "x_1": hm.Listing(
+                id="x_1",
+                title="T",
+                price=1.0,
+                url="http://x",
+                source="s",
+                first_seen="t",
+                last_seen="t",
+            )
+        }
+        asyncio.run(monitor._save_db())
+        monitor._start_of_day()
+        assert sorted(os.listdir(service_env.state)) == [
+            "health-check-state.json",
+            "seen-houses.json",
+        ]
+
+    def test_main_holds_the_state_directory_lock_while_the_monitor_runs(
+        self, service_env, stub_monitor
+    ):
+        assert _main.main() == 0
+        (monitor,) = stub_monitor
+        assert monitor.state == _startup.StatePaths.in_dir(str(service_env.state))
+        assert monitor.lock_held is True
+        # ... and lets it go once the monitor stops.
+        _hold_lock(service_env.state / "house-monitor.lock").close()
+
+
+class TestLock:
+    def test_a_held_lock_means_another_monitor_is_running(self, service_env, stub_monitor, capsys):
+        holder = _hold_lock(service_env.state / "house-monitor.lock")
+        try:
+            assert _main.main() == 1
+        finally:
+            holder.close()
+        assert stub_monitor == []
+        out = capsys.readouterr().out
+        assert "already running" in out
+        assert str(service_env.state / "house-monitor.lock") in out
+
+    def test_a_lock_file_that_cannot_be_opened_is_a_config_error(
+        self, service_env, stub_monitor, capsys
+    ):
+        (service_env.state / "house-monitor.lock").mkdir()  # open() fails
+        assert _main.main() == 78
+        assert stub_monitor == []
+        captured = capsys.readouterr()
+        assert "already running" not in captured.out + captured.err
+        assert "lock file" in captured.err
+
+    def test_a_failing_flock_is_a_config_error(self, service_env, stub_monitor, monkeypatch):
+        def _no_locks(*args):
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(_startup.fcntl, "flock", _no_locks)
+        assert _main.main() == 78
+        assert stub_monitor == []

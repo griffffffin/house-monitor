@@ -29,11 +29,12 @@ Originally a single ~3000-line script, later split into a proper package for mai
 house_monitor/
 ├── models.py         # Listing dataclass + shared parsing helpers (price parsing, encoding fallback)
 ├── config.py         # price filter, blacklist, per-site URLs, env-driven email config
+├── startup.py        # startup checks: state directory, lock file
 ├── logging_setup.py  # a custom log level that keeps interactive console output readable
 ├── email_notifier.py # SMTP sending
 ├── scrapers/          # one file per site, each exposing an async fetch_listings()
 ├── monitor.py         # orchestrates scrapers, dedupe, email, persistence
-└── main.py             # entry point (file lock + asyncio.run)
+└── main.py             # entry point (startup checks, file lock, asyncio.run)
 
 tests/                 # 68 unit tests, no network calls (see Tests below)
 scripts/               # live_smoke_check.py — the real-network counterpart to the tests
@@ -69,6 +70,8 @@ Then:
 ```bash
 python3 -m house_monitor.main
 ```
+
+Run by hand like this, the monitor keeps its state (`seen-houses.json`, `health-check-state.json`, the lock file) in the project root. As a systemd service it expects a sandboxed unit instead: the state in the directory systemd passes in `STATE_DIRECTORY` (`StateDirectory=`), the only writable place. Without it, it exits with code 78 (`EX_CONFIG`) — pair it with `RestartPreventExitStatus=78`.
 
 Price range, blacklist words, and the schedule are all configured in `house_monitor/config.py`.
 

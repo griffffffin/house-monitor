@@ -18,13 +18,11 @@ from .config import (
     BLACKLIST,
     BLACKLIST_UNLESS,
     DAILY_RUN_HOUR,
-    DATA_FILE,
     DUPLICATE_LOOKBACK_DAYS,
     EMAIL_CONFIG,
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
     HEALTH_MIN_CONSECUTIVE,
-    HEALTH_STATE_FILE,
     INCOMPLETE_RETRY_DELAYS,
     LOG_FILE,
     SITE_BLACKLIST,
@@ -63,6 +61,7 @@ from .scrapers import (
     WillhabenScraper,
     WohnnetScraper,
 )
+from .startup import StatePaths
 
 # Per-scraper display name + unit for the final, alphabetically sorted
 # console summary in run() (the "listings" group first, then "ads", each
@@ -124,8 +123,12 @@ SOURCE_DISPLAY_NAMES = {
 
 
 class HouseMonitor:
-    def __init__(self):
+    def __init__(self, state: StatePaths):
+        """`state` comes from the startup checks (startup.run_startup_checks):
+        every file the monitor writes is in the state directory."""
         self._setup_logging()
+        self.data_file = state.data_file
+        self.health_state_file = state.health_state_file
         self.notifier = EmailNotifier(EMAIL_CONFIG)
         self.seen: Dict[str, Listing] = {}
         self.session: Optional[aiohttp.ClientSession] = None
@@ -173,14 +176,14 @@ class HouseMonitor:
         logging.info(f"Logging initialized. LOG_FILE={LOG_FILE}")
 
     async def _load_db(self):
-        if not os.path.exists(DATA_FILE):
+        if not os.path.exists(self.data_file):
             return
         try:
-            async with aiofiles.open(DATA_FILE, "r", encoding="utf-8") as f:
+            async with aiofiles.open(self.data_file, "r", encoding="utf-8") as f:
                 raw = await f.read()
             data = json.loads(raw)
         except Exception as e:
-            logging.error(f"Error loading {DATA_FILE}: {e}")
+            logging.error(f"Error loading {self.data_file}: {e}")
             return
 
         # Load entry-by-entry: a single corrupt/incompatible entry doesn't
@@ -193,10 +196,10 @@ class HouseMonitor:
                 loaded[lid] = Listing(**v)
             except Exception as e:
                 skipped += 1
-                logging.error(f"Skipping corrupt entry '{lid}' in {DATA_FILE}: {e}")
+                logging.error(f"Skipping corrupt entry '{lid}' in {self.data_file}: {e}")
         self.seen = loaded
         log_notice(
-            f"Loaded {_fmt_count(len(self.seen))} listings from {DATA_FILE}"
+            f"Loaded {_fmt_count(len(self.seen))} listings from {self.data_file}"
             + (f" ({skipped} corrupt entries skipped)." if skipped else ".")
         )
 
@@ -212,16 +215,16 @@ class HouseMonitor:
 
             # Atomic write: write to a temp file first, then rename it to the
             # final name via os.replace(). This way, if the write is
-            # interrupted (power loss, kill), the existing DATA_FILE is left
+            # interrupted (power loss, kill), the existing data file is left
             # intact rather than truncated/corrupted.
-            tmp_file = f"{DATA_FILE}.tmp"
+            tmp_file = f"{self.data_file}.tmp"
             async with aiofiles.open(tmp_file, "w", encoding="utf-8") as f:
                 await f.write(json.dumps(to_save, ensure_ascii=False, indent=2))
-            os.replace(tmp_file, DATA_FILE)
+            os.replace(tmp_file, self.data_file)
         except Exception as e:
             logging.error(f"Error saving database: {e}")
             self.today_errors["db_save"] = (
-                f"nem sikerült menteni a {DATA_FILE} fájlt ({health.format_error(e)})"
+                f"nem sikerült menteni a {self.data_file} fájlt ({health.format_error(e)})"
             )
 
     def _seconds_until_daily_run(self) -> float:
@@ -581,7 +584,7 @@ class HouseMonitor:
         self.day_late = []
         try:
             today = date.today().isoformat()
-            state = health.load_state(HEALTH_STATE_FILE)
+            state = health.load_state(self.health_state_file)
             missed = health.missed_days(state.get("last_run_date"), today)
             if len(missed) >= HEALTH_MIN_CONSECUTIVE:
                 logging.warning(f"The monitor didn't run on {len(missed)} day(s): {missed}")
@@ -592,7 +595,7 @@ class HouseMonitor:
                     f"({missed[0]} – {missed[-1]}), pl. a Pi újraindult vagy állt a szolgáltatás",
                 }
             state["last_run_date"] = today
-            health.save_state(HEALTH_STATE_FILE, state)
+            health.save_state(self.health_state_file, state)
             alerts = list(state.get("pending_alerts") or [])
             if state.get("missed_runs"):
                 alerts.append(state["missed_runs"])
@@ -607,10 +610,10 @@ class HouseMonitor:
     def _clear_reported_alerts(self) -> None:
         """The alerts made it into an email: don't carry them over."""
         try:
-            state = health.load_state(HEALTH_STATE_FILE)
+            state = health.load_state(self.health_state_file)
             state["pending_alerts"] = []
             state.pop("missed_runs", None)
-            health.save_state(HEALTH_STATE_FILE, state)
+            health.save_state(self.health_state_file, state)
         except Exception as e:
             logging.error(f"Could not clear the reported alerts: {e}", exc_info=True)
 
@@ -624,7 +627,7 @@ class HouseMonitor:
         must not take the monitoring loop down with it."""
         try:
             today = date.today().isoformat()
-            state = health.load_state(HEALTH_STATE_FILE)
+            state = health.load_state(self.health_state_file)
             if state.get("last_check_date") == today:
                 # E.g. a second run the same day: counting it again would
                 # turn one bad day into "two consecutive" ones.
@@ -657,7 +660,7 @@ class HouseMonitor:
             state["last_check_date"] = today
             state["streaks"] = streaks
             state["pending_alerts"] = health.due_alerts(streaks)
-            health.save_state(HEALTH_STATE_FILE, state)
+            health.save_state(self.health_state_file, state)
             self.today_errors = {}
 
             for key, streak in sorted(streaks.items()):
