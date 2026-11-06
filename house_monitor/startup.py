@@ -1,10 +1,11 @@
 """Startup checks: where the monitor keeps its state, its lock, its mail settings.
 
-main() runs these before anything else. A failed check raises ConfigError,
-which main() turns into exit code 78 (EX_CONFIG): the service unit doesn't
-restart on it, so a broken setup stays visibly failed instead of retrying
-every five minutes. Nothing here runs at import time — the tests and
-scripts/live_smoke_check.py import the package too.
+main() runs these before anything else, and `--check` runs only these — the
+same functions, so the check can't drift from a real start. A failed check
+raises ConfigError, which main() turns into exit code 78 (EX_CONFIG): the
+service unit doesn't restart on it, so a broken setup stays visibly failed
+instead of retrying every five minutes. Nothing here runs at import time —
+the tests and scripts/live_smoke_check.py import the package too.
 
 As a systemd service (INVOCATION_ID is set) the code directory is read-only
 and the one writable place is the state directory systemd passes in
@@ -18,7 +19,7 @@ import fcntl
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import IO, Any, Dict, Mapping
+from typing import IO, Any, Dict, Mapping, Tuple
 
 from .config import DATA_FILE_NAME, HEALTH_STATE_FILE_NAME, LOCK_FILE_NAME, PROJECT_ROOT
 
@@ -165,11 +166,12 @@ def read_credential(path: str) -> Dict[str, str]:
     return parse_credential(text)
 
 
-def load_email_config(environ: Mapping[str, str]) -> Dict[str, Any]:
-    """The EmailNotifier settings. As a service: the credential, which must
-    give SMTP_SERVER, SENDER_EMAIL, SENDER_PASSWORD and RECIPIENT_EMAIL —
-    without email the monitor would mark ads as seen without telling anyone.
-    On a manual run: the environment, as before (no check)."""
+def load_email_config(environ: Mapping[str, str]) -> Tuple[Dict[str, Any], str]:
+    """The EmailNotifier settings, and where they came from. As a service:
+    the credential, which must give SMTP_SERVER, SENDER_EMAIL,
+    SENDER_PASSWORD and RECIPIENT_EMAIL — without email the monitor would
+    mark ads as seen without telling anyone. On a manual run: the
+    environment, as before (no check)."""
     if service_mode(environ):
         directory = environ.get("CREDENTIALS_DIRECTORY", "")
         if not directory:
@@ -186,28 +188,32 @@ def load_email_config(environ: Mapping[str, str]) -> Dict[str, Any]:
                 "without email the monitor would mark ads as seen without telling anyone"
             )
         server = settings["SMTP_SERVER"]
+        source = f"the credential {path}"
     else:
         settings = {key: environ[key] for key in SMTP_KEYS if key in environ}
         server = settings.get("SMTP_SERVER", SMTP_DEFAULT_SERVER)
+        source = "the environment"
     port = settings.get("SMTP_PORT") or SMTP_DEFAULT_PORT
     if not (port.isascii() and port.isdigit() and 0 < int(port) < 65536):
         raise ConfigError("SMTP_PORT is not a port number")
-    return {
+    config = {
         "smtp_server": server,
         "smtp_port": int(port),
         "sender_email": settings.get("SENDER_EMAIL", ""),
         "sender_password": settings.get("SENDER_PASSWORD", ""),
         "recipient_email": settings.get("RECIPIENT_EMAIL", ""),
     }
+    return config, source
 
 
 @dataclass
 class Startup:
-    """What the checks found: the state's place, the mail settings, and the
-    opened, not yet taken lock file."""
+    """What the checks found: the state's place, the mail settings (and
+    their source, for the log), and the opened, not yet taken lock file."""
 
     state: StatePaths
     email_config: Dict[str, Any]
+    email_source: str
     lock: IO[str]
 
 
@@ -218,6 +224,6 @@ def run_startup_checks(environ: Mapping[str, str]) -> Startup:
     file, created when missing (the state directory's write check leaves
     nothing)."""
     state = StatePaths.in_dir(resolve_state_dir(environ))
-    email_config = load_email_config(environ)
+    email_config, email_source = load_email_config(environ)
     lock = open_lock_file(state.lock_file)
-    return Startup(state, email_config, lock)
+    return Startup(state, email_config, email_source, lock)

@@ -34,7 +34,7 @@ house_monitor/
 ├── email_notifier.py # SMTP sending
 ├── scrapers/          # one file per site, each exposing an async fetch_listings()
 ├── monitor.py         # orchestrates scrapers, dedupe, email, persistence
-└── main.py             # entry point (startup checks, file lock, asyncio.run)
+└── main.py             # entry point (startup checks, file lock, asyncio.run; --check)
 
 tests/                 # 68 unit tests, no network calls (see Tests below)
 scripts/               # live_smoke_check.py — the real-network counterpart to the tests
@@ -71,7 +71,7 @@ Then:
 python3 -m house_monitor.main
 ```
 
-Run by hand like this, the monitor keeps its state (`seen-houses.json`, `health-check-state.json`, the lock file) in the project root. As a systemd service it expects a sandboxed unit instead: the state in the directory systemd passes in `STATE_DIRECTORY` (`StateDirectory=`), the only writable place, and the same five settings as `KEY=VALUE` lines in the systemd credential `smtp` (`ImportCredential=smtp`, read as `$CREDENTIALS_DIRECTORY/smtp`, values taken literally). If either is missing it exits with code 78 (`EX_CONFIG`) — pair it with `RestartPreventExitStatus=78`.
+Run by hand like this, the monitor keeps its state (`seen-houses.json`, `health-check-state.json`, the lock file) in the project root. As a systemd service it expects a sandboxed unit instead: the state in the directory systemd passes in `STATE_DIRECTORY` (`StateDirectory=`), the only writable place, and the same five settings as `KEY=VALUE` lines in the systemd credential `smtp` (`ImportCredential=smtp`, read as `$CREDENTIALS_DIRECTORY/smtp`, values taken literally). If either is missing it exits with code 78 (`EX_CONFIG`) — pair it with `RestartPreventExitStatus=78`. `python3 -m house_monitor.main --check` runs only these startup checks and exits with 0 or 78, without touching the network.
 
 Price range, blacklist words, and the schedule are all configured in `house_monitor/config.py`.
 

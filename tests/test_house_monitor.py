@@ -2712,8 +2712,8 @@ class TestScrapeAndNotifyDbUpdate:
 
 
 # ---------------------------------------------------------------------------
-# Startup checks (house_monitor/startup.py): the state directory, the
-# lock, the mail credential
+# Startup checks (house_monitor/startup.py, main --check): the state
+# directory, the lock, the mail credential
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -2822,7 +2822,7 @@ class TestStateDirectory:
         with pytest.raises(_startup.ConfigError, match=f"STATE_DIRECTORY.*{problem}"):
             _startup.resolve_state_dir(os.environ)
         # No fallback anywhere: main() stops with EX_CONFIG.
-        assert _main.main() == 78
+        assert _main.main([]) == 78
         assert stub_monitor == []
         assert "STATE_DIRECTORY" in capsys.readouterr().err
 
@@ -2832,7 +2832,7 @@ class TestStateDirectory:
         try:
             with pytest.raises(_startup.ConfigError, match="not writable"):
                 _startup.resolve_state_dir(os.environ)
-            assert _main.main() == 78
+            assert _main.main([]) == 78
             assert stub_monitor == []
         finally:
             service_env.state.chmod(0o700)
@@ -2900,7 +2900,7 @@ class TestStatePaths:
     def test_main_holds_the_state_directory_lock_while_the_monitor_runs(
         self, service_env, stub_monitor
     ):
-        assert _main.main() == 0
+        assert _main.main([]) == 0
         (monitor,) = stub_monitor
         assert monitor.state == _startup.StatePaths.in_dir(str(service_env.state))
         assert monitor.lock_held is True
@@ -2913,7 +2913,7 @@ class TestLock:
     def test_a_held_lock_means_another_monitor_is_running(self, service_env, stub_monitor, capsys):
         holder = _hold_lock(service_env.state / "house-monitor.lock")
         try:
-            assert _main.main() == 1
+            assert _main.main([]) == 1
         finally:
             holder.close()
         assert stub_monitor == []
@@ -2925,7 +2925,7 @@ class TestLock:
         self, service_env, stub_monitor, capsys
     ):
         (service_env.state / "house-monitor.lock").mkdir()  # open() fails
-        assert _main.main() == 78
+        assert _main.main([]) == 78
         assert stub_monitor == []
         captured = capsys.readouterr()
         assert "already running" not in captured.out + captured.err
@@ -2936,7 +2936,7 @@ class TestLock:
             raise OSError(errno.ENOLCK, "No locks available")
 
         monkeypatch.setattr(_startup.fcntl, "flock", _no_locks)
-        assert _main.main() == 78
+        assert _main.main([]) == 78
         assert stub_monitor == []
 
 
@@ -2990,7 +2990,7 @@ class TestMailCredential:
     def test_the_service_reads_the_credential_not_the_environment(self, service_env, monkeypatch):
         monkeypatch.setenv("SMTP_SERVER", "env.example.test")
         monkeypatch.setenv("SENDER_PASSWORD", "env-password")
-        config = _startup.load_email_config(os.environ)
+        config, source = _startup.load_email_config(os.environ)
         assert config == {
             "smtp_server": "smtp.example.test",
             "smtp_port": 587,
@@ -2998,6 +2998,7 @@ class TestMailCredential:
             "sender_password": "Very-Secret-Pw",
             "recipient_email": "recipient@example.test",
         }
+        assert str(service_env.credential) in source
 
     def test_the_service_has_no_fallback_to_the_environment(
         self, service_env, stub_monitor, monkeypatch
@@ -3007,7 +3008,7 @@ class TestMailCredential:
             monkeypatch.setenv(key, "587" if key == "SMTP_PORT" else "from-env")
         with pytest.raises(_startup.ConfigError, match="does not exist"):
             _startup.load_email_config(os.environ)
-        assert _main.main() == 78
+        assert _main.main([]) == 78
         assert stub_monitor == []
 
     def test_no_credentials_directory_is_a_config_error(self, service_env, monkeypatch):
@@ -3027,7 +3028,7 @@ class TestMailCredential:
         with pytest.raises(_startup.ConfigError) as caught:
             _startup.load_email_config(os.environ)
         assert key in str(caught.value)
-        assert _main.main() == 78
+        assert _main.main([]) == 78
         assert stub_monitor == []
         captured = capsys.readouterr()
         logged = str(caught.value) + captured.out + captured.err
@@ -3037,7 +3038,7 @@ class TestMailCredential:
 
     def test_the_port_defaults_to_587_and_must_be_a_number(self, service_env):
         service_env.credential.write_text(_CREDENTIAL.replace("SMTP_PORT=587\n", ""), "utf-8")
-        assert _startup.load_email_config(os.environ)["smtp_port"] == 587
+        assert _startup.load_email_config(os.environ)[0]["smtp_port"] == 587
         service_env.credential.write_text(_CREDENTIAL.replace("=587", "=5x87"), "utf-8")
         with pytest.raises(_startup.ConfigError, match="SMTP_PORT") as caught:
             _startup.load_email_config(os.environ)
@@ -3053,7 +3054,7 @@ class TestMailCredential:
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         for key in _startup.SMTP_KEYS:
             monkeypatch.delenv(key, raising=False)
-        config = _startup.load_email_config(os.environ)
+        config, source = _startup.load_email_config(os.environ)
         assert config == {
             "smtp_server": "smtp.gmail.com",
             "smtp_port": 587,
@@ -3061,8 +3062,75 @@ class TestMailCredential:
             "sender_password": "",
             "recipient_email": "",
         }
+        assert source == "the environment"
         monkeypatch.setenv("SENDER_EMAIL", "me@example.test")
         monkeypatch.setenv("SMTP_PORT", "465")
-        config = _startup.load_email_config(os.environ)
+        config, _ = _startup.load_email_config(os.environ)
         assert config["sender_email"] == "me@example.test"
         assert config["smtp_port"] == 465
+
+
+class TestCheckOption:
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("--check must not get this far")
+
+    def test_check_passes_without_network_email_or_state(
+        self, service_env, stub_monitor, monkeypatch, capsys
+    ):
+        for name in ("connect", "connect_ex"):
+            monkeypatch.setattr(socket.socket, name, self._forbidden)
+        monkeypatch.setattr(socket, "create_connection", self._forbidden)
+        monkeypatch.setattr(socket, "getaddrinfo", self._forbidden)
+        monkeypatch.setattr(_main.asyncio, "run", self._forbidden)
+        assert _main.main(["--check"]) == 0
+        assert stub_monitor == []  # no monitor: no scraping, no email, no DB
+        # Only the (empty) lock file — no seen-DB, no health state, no leftovers.
+        assert os.listdir(service_env.state) == ["house-monitor.lock"]
+        assert (service_env.state / "house-monitor.lock").read_text() == ""
+        assert "Startup checks passed" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("broken", ["state directory", "credential", "key", "lock file"])
+    def test_check_fails_on_every_gate(
+        self, service_env, stub_monitor, monkeypatch, capsys, broken
+    ):
+        if broken == "state directory":
+            monkeypatch.delenv("STATE_DIRECTORY")
+        elif broken == "credential":
+            service_env.credential.unlink()
+        elif broken == "key":
+            service_env.credential.write_text(
+                _CREDENTIAL.replace("SENDER_PASSWORD=", "#SENDER_PASSWORD="), "utf-8"
+            )
+        else:
+            (service_env.state / "house-monitor.lock").mkdir()
+        assert _main.main(["--check"]) == 78
+        assert stub_monitor == []
+        assert "Configuration error" in capsys.readouterr().err
+
+    def test_check_passes_while_a_monitor_is_running(self, service_env, stub_monitor):
+        # The installer checks the new code before it stops the running one.
+        holder = _hold_lock(service_env.state / "house-monitor.lock")
+        try:
+            assert _main.main(["--check"]) == 0
+        finally:
+            holder.close()
+
+    def test_check_from_the_command_line(self, service_env, monkeypatch):
+        def run():
+            return subprocess.run(
+                [sys.executable, "-B", "-m", "house_monitor.main", "--check"],
+                cwd=PROJECT_ROOT,
+                env=dict(os.environ),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        ok = run()
+        assert ok.returncode == 0, ok.stderr
+        assert os.listdir(service_env.state) == ["house-monitor.lock"]
+        monkeypatch.delenv("STATE_DIRECTORY")
+        failed = run()
+        assert failed.returncode == 78
+        assert "STATE_DIRECTORY" in failed.stderr
