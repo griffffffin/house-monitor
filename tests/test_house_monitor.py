@@ -2712,24 +2712,39 @@ class TestScrapeAndNotifyDbUpdate:
 
 
 # ---------------------------------------------------------------------------
-# Startup checks (house_monitor/startup.py): the state directory and
-# the lock
+# Startup checks (house_monitor/startup.py): the state directory, the
+# lock, the mail credential
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
+_CREDENTIAL = (
+    "SMTP_SERVER=smtp.example.test\n"
+    "SMTP_PORT=587\n"
+    "SENDER_EMAIL=sender@example.test\n"
+    "SENDER_PASSWORD=Very-Secret-Pw\n"
+    "RECIPIENT_EMAIL=recipient@example.test\n"
+)
+
 
 @pytest.fixture
 def service_env(tmp_path, monkeypatch):
-    """The environment systemd gives the service: INVOCATION_ID and an empty
-    state directory."""
+    """The environment systemd gives the service: INVOCATION_ID, an empty
+    state directory and a complete mail credential — and no SMTP_*
+    variables (the developer's shell may have some)."""
     state = tmp_path / "state"
     state.mkdir()
+    creds = tmp_path / "credentials"
+    creds.mkdir()
+    (creds / "smtp").write_text(_CREDENTIAL, encoding="utf-8")
     monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
     monkeypatch.setenv("STATE_DIRECTORY", str(state))
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(creds))
+    for key in _startup.SMTP_KEYS:
+        monkeypatch.delenv(key, raising=False)
     # main() installs a SIGTERM handler; keep the test process's own.
     monkeypatch.setattr(_main.signal, "signal", lambda *args: None)
-    return types.SimpleNamespace(state=state)
+    return types.SimpleNamespace(state=state, creds=creds, credential=creds / "smtp")
 
 
 @pytest.fixture
@@ -2739,8 +2754,9 @@ def stub_monitor(monkeypatch):
     made = []
 
     class _StubMonitor:
-        def __init__(self, state):
+        def __init__(self, state, email_config):
             self.state = state
+            self.email_config = email_config
             self.lock_held = None
             made.append(self)
 
@@ -2861,7 +2877,7 @@ class TestStatePaths:
     ):
         monkeypatch.setattr(hm.HouseMonitor, "_setup_logging", lambda self: None)
         state = _startup.StatePaths.in_dir(str(service_env.state))
-        monitor = hm.HouseMonitor(state)
+        monitor = hm.HouseMonitor(state, {"smtp_server": "x"})
         monitor.seen = {
             "x_1": hm.Listing(
                 id="x_1",
@@ -2879,6 +2895,7 @@ class TestStatePaths:
             "health-check-state.json",
             "seen-houses.json",
         ]
+        assert monitor.notifier.config == {"smtp_server": "x"}
 
     def test_main_holds_the_state_directory_lock_while_the_monitor_runs(
         self, service_env, stub_monitor
@@ -2887,6 +2904,7 @@ class TestStatePaths:
         (monitor,) = stub_monitor
         assert monitor.state == _startup.StatePaths.in_dir(str(service_env.state))
         assert monitor.lock_held is True
+        assert monitor.email_config["sender_password"] == "Very-Secret-Pw"
         # ... and lets it go once the monitor stops.
         _hold_lock(service_env.state / "house-monitor.lock").close()
 
@@ -2920,3 +2938,131 @@ class TestLock:
         monkeypatch.setattr(_startup.fcntl, "flock", _no_locks)
         assert _main.main() == 78
         assert stub_monitor == []
+
+
+class TestMailCredential:
+    def test_values_are_taken_literally(self):
+        settings = _startup.parse_credential(
+            "SENDER_PASSWORD= pa=ss#wo \"rd\" 'x' $HOME \\t \n"
+            'SENDER_EMAIL="quoted@example.test"\n'
+        )
+        assert settings == {
+            "SENDER_PASSWORD": " pa=ss#wo \"rd\" 'x' $HOME \\t ",
+            "SENDER_EMAIL": '"quoted@example.test"',
+        }
+
+    def test_crlf_line_ends_are_cut(self):
+        settings = _startup.parse_credential("SMTP_SERVER=smtp.example.test\r\nSMTP_PORT=465\r\n")
+        assert settings == {"SMTP_SERVER": "smtp.example.test", "SMTP_PORT": "465"}
+
+    def test_comment_and_empty_lines_are_skipped(self):
+        settings = _startup.parse_credential(
+            "# SMTP_SERVER=commented.example.test\n"
+            "\n"
+            "\r\n"
+            "#SENDER_EMAIL=commented@example.test\n"
+            "SMTP_SERVER=smtp.example.test\n"
+        )
+        assert settings == {"SMTP_SERVER": "smtp.example.test"}
+
+    def test_only_the_exact_keys_are_read(self):
+        settings = _startup.parse_credential(
+            "XSMTP_SERVER=prefixed\n"
+            "SMTP_SERVERX=suffixed\n"
+            "SMTP_SERVER_=suffixed\n"
+            "export SMTP_SERVER=exported\n"
+            " SMTP_SERVER=indented\n"
+            "smtp_server=lowercase\n"
+            "SMTP_SERVER\n"  # no "="
+            "OTHER_SECRET=unknown\n"
+        )
+        assert settings == {}
+
+    def test_a_value_is_split_only_at_newlines(self):
+        # str.splitlines() would also split at these.
+        settings = _startup.parse_credential("SENDER_PASSWORD=a\x0bb\x0cc\x1cd\x85e\u2028f\n")
+        assert settings == {"SENDER_PASSWORD": "a\x0bb\x0cc\x1cd\x85e\u2028f"}
+
+    def test_a_later_line_wins(self):
+        settings = _startup.parse_credential("SMTP_PORT=25\nSMTP_PORT=587\n")
+        assert settings == {"SMTP_PORT": "587"}
+
+    def test_the_service_reads_the_credential_not_the_environment(self, service_env, monkeypatch):
+        monkeypatch.setenv("SMTP_SERVER", "env.example.test")
+        monkeypatch.setenv("SENDER_PASSWORD", "env-password")
+        config = _startup.load_email_config(os.environ)
+        assert config == {
+            "smtp_server": "smtp.example.test",
+            "smtp_port": 587,
+            "sender_email": "sender@example.test",
+            "sender_password": "Very-Secret-Pw",
+            "recipient_email": "recipient@example.test",
+        }
+
+    def test_the_service_has_no_fallback_to_the_environment(
+        self, service_env, stub_monitor, monkeypatch
+    ):
+        service_env.credential.unlink()
+        for key in _startup.SMTP_KEYS:
+            monkeypatch.setenv(key, "587" if key == "SMTP_PORT" else "from-env")
+        with pytest.raises(_startup.ConfigError, match="does not exist"):
+            _startup.load_email_config(os.environ)
+        assert _main.main() == 78
+        assert stub_monitor == []
+
+    def test_no_credentials_directory_is_a_config_error(self, service_env, monkeypatch):
+        monkeypatch.delenv("CREDENTIALS_DIRECTORY")
+        with pytest.raises(_startup.ConfigError, match="CREDENTIALS_DIRECTORY"):
+            _startup.load_email_config(os.environ)
+
+    @pytest.mark.parametrize("key", _startup.SMTP_REQUIRED_KEYS)
+    @pytest.mark.parametrize("how", ["missing", "empty"])
+    def test_a_missing_key_is_named_without_any_value(
+        self, service_env, stub_monitor, capsys, key, how
+    ):
+        lines = [line for line in _CREDENTIAL.splitlines() if not line.startswith(f"{key}=")]
+        if how == "empty":
+            lines.append(f"{key}=")
+        service_env.credential.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with pytest.raises(_startup.ConfigError) as caught:
+            _startup.load_email_config(os.environ)
+        assert key in str(caught.value)
+        assert _main.main() == 78
+        assert stub_monitor == []
+        captured = capsys.readouterr()
+        logged = str(caught.value) + captured.out + captured.err
+        assert key in captured.err
+        for secret in ("Very-Secret-Pw", "sender@example.test", "smtp.example.test"):
+            assert secret not in logged
+
+    def test_the_port_defaults_to_587_and_must_be_a_number(self, service_env):
+        service_env.credential.write_text(_CREDENTIAL.replace("SMTP_PORT=587\n", ""), "utf-8")
+        assert _startup.load_email_config(os.environ)["smtp_port"] == 587
+        service_env.credential.write_text(_CREDENTIAL.replace("=587", "=5x87"), "utf-8")
+        with pytest.raises(_startup.ConfigError, match="SMTP_PORT") as caught:
+            _startup.load_email_config(os.environ)
+        assert "5x87" not in str(caught.value)
+
+    def test_a_credential_that_is_not_utf8_is_a_config_error(self, service_env):
+        service_env.credential.write_bytes(_CREDENTIAL.encode() + b"SENDER_PASSWORD=\xff\xfe\n")
+        with pytest.raises(_startup.ConfigError, match="UTF-8") as caught:
+            _startup.load_email_config(os.environ)
+        assert "xff" not in str(caught.value)
+
+    def test_a_manual_run_reads_the_environment_as_before(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        for key in _startup.SMTP_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        config = _startup.load_email_config(os.environ)
+        assert config == {
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 587,
+            "sender_email": "",
+            "sender_password": "",
+            "recipient_email": "",
+        }
+        monkeypatch.setenv("SENDER_EMAIL", "me@example.test")
+        monkeypatch.setenv("SMTP_PORT", "465")
+        config = _startup.load_email_config(os.environ)
+        assert config["sender_email"] == "me@example.test"
+        assert config["smtp_port"] == 465

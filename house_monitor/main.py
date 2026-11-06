@@ -2,8 +2,8 @@
 lock and starts HouseMonitor.
 
 Exit codes: 1 — another monitor holds the lock; 78 (EX_CONFIG) — a
-configuration error: no usable state directory, or a lock file that can't
-be opened. The service unit doesn't restart on 78.
+configuration error: no usable state directory, a lock file that can't be
+opened, missing mail settings. The service unit doesn't restart on 78.
 """
 
 import asyncio
@@ -58,7 +58,7 @@ def main() -> int:
         startup.lock.close()
         return _config_error(e)
 
-    monitor = HouseMonitor(startup.state)
+    monitor = HouseMonitor(startup.state, startup.email_config)
     try:
         asyncio.run(monitor.run())
     except KeyboardInterrupt:

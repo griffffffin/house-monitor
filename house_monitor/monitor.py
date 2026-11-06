@@ -19,7 +19,6 @@ from .config import (
     BLACKLIST_UNLESS,
     DAILY_RUN_HOUR,
     DUPLICATE_LOOKBACK_DAYS,
-    EMAIL_CONFIG,
     EUR_PRICE_FROM,
     EUR_PRICE_TO,
     HEALTH_MIN_CONSECUTIVE,
@@ -123,13 +122,14 @@ SOURCE_DISPLAY_NAMES = {
 
 
 class HouseMonitor:
-    def __init__(self, state: StatePaths):
-        """`state` comes from the startup checks (startup.run_startup_checks):
-        every file the monitor writes is in the state directory."""
+    def __init__(self, state: StatePaths, email_config: Dict[str, Any]):
+        """`state` and `email_config` come from the startup checks
+        (startup.run_startup_checks): every file the monitor writes is in
+        the state directory."""
         self._setup_logging()
         self.data_file = state.data_file
         self.health_state_file = state.health_state_file
-        self.notifier = EmailNotifier(EMAIL_CONFIG)
+        self.notifier = EmailNotifier(email_config)
         self.seen: Dict[str, Listing] = {}
         self.session: Optional[aiohttp.ClientSession] = None
         # Scraper class name -> how many listings its latest fetch returned
