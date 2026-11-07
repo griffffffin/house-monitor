@@ -3,8 +3,8 @@
 Run from the project root:
     python3 -m pytest tests/ -v
 
-Dependencies (already required to run house_monitor itself, plus pytest):
-    pip install -r requirements.txt
+Dependencies (what house_monitor itself needs, plus pytest and the dev tools):
+    pip install -r requirements-dev.txt
 
 These tests make no real network calls and send no real email — they only
 exercise the parsing/filtering/serialization logic in the package, against

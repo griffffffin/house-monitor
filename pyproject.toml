@@ -7,10 +7,18 @@ name = "house-monitor"
 version = "1.0.0"
 description = "Asyncio scraper that watches Austrian real-estate sites for cheap houses and emails a summary of new/cheaper listings"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [{ name = "David Afra" }]
-dependencies = ["aiohttp==3.9.1", "aiofiles==25.1.0", "beautifulsoup4==4.15.0", "lxml==6.1.1"]
+# The same direct pins as requirements.txt (= the Pi's apt packages; a test keeps
+# the two in step). aiodns isn't imported, but it makes c-ares aiohttp's resolver.
+dependencies = [
+    "aiohttp==3.13.3",
+    "aiofiles==25.1.0",
+    "beautifulsoup4==4.14.3",
+    "lxml==6.0.2",
+    "aiodns==4.0.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -32,13 +40,15 @@ include = ["house_monitor*"]
 
 [tool.black]
 line-length = 100
+# py311 on purpose, although production runs 3.14: with py314, black rewrites
+# `except (A, B):` into the 3.14-only unparenthesized form across the package.
 target-version = ["py311"]
 
 [tool.ruff]
 line-length = 100
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

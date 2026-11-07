@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/griffffffin/house-monitor/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](.python-version)
 
 An asyncio-based Python scraper that watches 19 Austrian real-estate websites for cheap houses and emails a summary whenever a new listing appears or an existing one drops in price.
 
@@ -38,6 +38,7 @@ house_monitor/
 
 tests/                 # 68 unit tests, no network calls (see Tests below)
 scripts/               # live_smoke_check.py — the real-network counterpart to the tests
+                       # check_pinned_deps.py — installed versions vs. the pins (run on the Pi)
 ```
 
 ### A few things worth pointing out
@@ -53,7 +54,7 @@ scripts/               # live_smoke_check.py — the real-network counterpart to
 pip install -r requirements.txt
 ```
 
-(or `pip install .` / `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `house-monitor` console script; production just uses `requirements.txt` directly since the deployment target has no internet access to install a package from, see `CLAUDE.md`)
+(or `pip install .` / `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `house-monitor` console script; production doesn't pip-install at all: the systemd unit runs `python3 -m house_monitor.main` against the deployed package, with the dependencies from the Pi's system Python. `requirements.txt` pins exactly the versions the Pi's apt packages provide, so a dev venv runs what production runs, see [Pins = the Pi's packages](#pins--the-pis-packages))
 
 Set the following environment variables (see `.env.example`):
 
@@ -109,7 +110,7 @@ make install-dev
 make check   # test + lint + typecheck + format --check, all in one go
 ```
 
-CI runs the test suite against Python 3.11, 3.12, and 3.13.
+CI runs the test suite on one Python version, the one production runs (3.14, read from `.python-version`), with the pinned dependencies, after first checking that the installed versions really are the pinned ones; plus a separate lint job (formatting/lint/type-check).
 
 Optionally, install the [pre-commit](https://pre-commit.com/) hooks to run the same checks automatically before every commit, instead of only in CI:
 
@@ -118,7 +119,17 @@ pip install pre-commit
 pre-commit install
 ```
 
-Dependency updates (both Python packages and the CI workflow's own actions) are handled by [Dependabot](.github/dependabot.yml), which opens a PR automatically on a weekly schedule.
+Dependency updates for the dev tools and the CI workflow's own actions are handled by [Dependabot](.github/dependabot.yml), which opens a PR automatically on a weekly schedule. The runtime pins are deliberately left out of it: they follow the Pi's apt packages, not PyPI (see below).
+
+### Pins = the Pi's packages
+
+Production runs the Raspberry Pi's `/usr/bin/python3` with its apt packages (`python3-aiohttp`, `python3-bs4`, `python3-lxml`, `python3-aiofiles`, ...), not a venv. `requirements.txt` pins exactly those versions, the transitive ones (`yarl`, `multidict`, `soupsieve`, ...) included, plus `aiodns`: the code never imports it, but because it is installed, aiohttp resolves names through c-ares instead of `getaddrinfo`. `.python-version` names that Python, so a dev venv and CI test what actually runs. `requirements.txt` holds only what the service needs; pytest is in `requirements-dev.txt`. When the Pi's packages change (an apt upgrade), this check notices — run it on the Pi with the system Python:
+
+```bash
+/usr/bin/python3 -s scripts/check_pinned_deps.py
+```
+
+It compares every pin with the installed version and the interpreter with `.python-version`, and exits non-zero on any difference (CI runs it too, against its own install; `make check-deps` locally). The fix is then to move the pins to the new versions (and run the tests and the live smoke check on them), not the other way round. Limits: a Debian/Ubuntu-only change that keeps the upstream version (a security backport such as `+esm1`, a rebuild) has nothing pip could pin, so it doesn't show; `cffi` (needed by `pycares`) can't be pinned, since the Pi has only its backend module, without package metadata; and `multidict`/`propcache` at these versions have no prebuilt wheels for Python 3.14 on PyPI, so pip builds them from source, which (checked on an x86 laptop) gives their pure-Python implementations, while the Pi runs their C extensions.
 
 ## Sample output
 

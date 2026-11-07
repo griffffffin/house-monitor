@@ -1,10 +1,20 @@
 version: 2
 updates:
+  # Only the dev tools. The runtime pins in requirements.txt follow the Pi's apt
+  # packages, not PyPI: a Dependabot bump of one of them would install a version
+  # production doesn't have (and scripts/check_pinned_deps.py would then fail on
+  # the Pi). They change only when the Pi's apt does.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    allow:
+      - dependency-name: "pytest"
+      - dependency-name: "black"
+      - dependency-name: "ruff"
+      - dependency-name: "mypy"
+      - dependency-name: "types-beautifulsoup4"
 
   - package-ecosystem: "github-actions"
     directory: "/"

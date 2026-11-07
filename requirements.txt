@@ -1,5 +1,34 @@
-aiohttp==3.9.1
+# Pinned to exactly what the production service runs: the Pi's /usr/bin/python3
+# with its apt packages (python3-aiohttp, python3-bs4, ...), no venv. These pins
+# follow the Pi's apt, not PyPI. After an apt upgrade on the Pi, run
+#   /usr/bin/python3 -s scripts/check_pinned_deps.py
+# there; it exits non-zero when the installed versions no longer match these pins.
+# (Every line has to be an exact `name==version` pin, or the check refuses it.)
+# Only what the service needs: pytest and the dev tools are in requirements-dev.txt.
+aiohttp==3.13.3
 aiofiles==25.1.0
-beautifulsoup4==4.15.0
-lxml==6.1.1
-pytest==9.1.1
+beautifulsoup4==4.14.3
+lxml==6.0.2
+
+# Not imported by house_monitor, but installed on the Pi (python3-aiohttp
+# recommends it): with aiodns present, aiohttp's default resolver is c-ares
+# (AsyncResolver) instead of the threaded getaddrinfo one — the resolver whose
+# answers the IPv4-only connector is about, see CLAUDE.md.
+aiodns==4.0.0
+pycares==5.0.1
+
+# Transitive dependencies, pinned too so that a dev venv and CI resolve the
+# same versions as the Pi instead of the newest ones on PyPI.
+aiohappyeyeballs==2.6.1
+aiosignal==1.4.0
+attrs==25.4.0
+frozenlist==1.8.0
+idna==3.11
+multidict==6.4.3
+propcache==0.3.1
+soupsieve==2.8.3
+typing_extensions==4.15.0
+yarl==1.22.0
+# Not pinned: cffi, which pycares needs. The Pi has only its backend module
+# (python3-cffi-backend 2.0.0, `_cffi_backend`), with no package metadata,
+# so a cffi pin could never match there.
