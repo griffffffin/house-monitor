@@ -6,6 +6,7 @@ apt upgrade. A check that quietly passes is worse than none, so most of these
 tests are about it failing when it should.
 """
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -21,6 +22,13 @@ SCRIPT = REPO_ROOT / "scripts" / "check_pinned_deps.py"
 CURRENT_PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 PYTEST_VERSION = pytest.__version__
 DEV_TOOLS = {"pytest", "black", "ruff", "mypy", "types-beautifulsoup4"}
+# The automatically used packages this environment has (the dev venv and CI
+# pin aiodns): a requirements file of our own has to pin them too.
+AUTO_USED_HERE = "".join(
+    f"{dist}=={cpd.installed_version(dist)}\n"
+    for module, dist in cpd.AUTO_USED
+    if cpd.importable(module) and cpd.installed_version(dist)
+)
 
 
 def lookup_from(installed):
@@ -126,14 +134,83 @@ class TestCheckPins:
         assert any(line.split() == ["aiodns", "4.0.0", "(missing)", "MISSING"] for line in lines)
 
 
+class TestAutoUsed:
+    """Optional packages aiohttp switches to by itself (aiodns -> the c-ares
+    resolver, Brotli -> `br` decoding): importable but unpinned means the dev
+    venv and production take different code paths, which the pins alone
+    wouldn't show — e.g. a python3-brotli installed on the Pi later on."""
+
+    def test_importable_and_pinned_is_fine(self):
+        assert cpd.unpinned_auto_used({"aiodns": "4.0.0"}, lambda m: m == "aiodns") == []
+
+    def test_importable_but_unpinned_is_reported(self):
+        assert cpd.unpinned_auto_used({"aiohttp": "3.13.3"}, lambda m: m == "aiodns") == ["aiodns"]
+
+    def test_not_importable_is_fine(self):
+        assert cpd.unpinned_auto_used({}, lambda m: False) == []
+
+    def test_pins_are_matched_by_normalized_name(self):
+        pinned = {"brotli": "1.2.0", "Backports_Zstd": "1.0.0"}
+        assert cpd.unpinned_auto_used(pinned, lambda m: True) == ["aiodns", "brotlicffi"]
+
+    def test_looks_for_the_module_and_reports_the_distribution(self):
+        # The module is `brotli`, the distribution `Brotli`: find_spec is case
+        # sensitive, so asking for the distribution's name would miss it.
+        assert cpd.unpinned_auto_used({}, lambda m: m == "brotli") == ["Brotli"]
+        assert cpd.unpinned_auto_used({}, lambda m: m == "backports.zstd") == ["backports.zstd"]
+
+    def test_covers_what_aiohttp_picks_up(self):
+        modules = {module for module, _ in cpd.AUTO_USED}
+        assert {"aiodns", "brotli", "brotlicffi", "backports.zstd"} <= modules
+
+    def test_real_importable(self):
+        assert cpd.importable("json")
+        assert not cpd.importable("no_such_module_xyz")
+        assert not cpd.importable("no_such_package_xyz.sub")  # parent missing: no exception
+
+    def test_report_shows_an_unpinned_package(self):
+        report = cpd.format_report([], "3.14", (3, 14, 4), "/usr/bin/python3", ["aiodns"])
+        assert any(
+            line.split() == ["aiodns", "(none)", "(importable)", "UNPINNED"]
+            for line in report.splitlines()
+        )
+
+
+def fake_brotli(tmp_path, version=None):
+    """A directory that makes `brotli` importable (and, with a version, gives
+    it the metadata of a Brotli distribution), as an apt install would."""
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / "brotli.py").write_text("", encoding="utf-8")
+    if version is not None:
+        info = root / f"Brotli-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: Brotli\nVersion: {version}\n", encoding="utf-8"
+        )
+    return root
+
+
 class TestMain:
     """The real script as a process, against small requirements files of our own."""
 
-    def run(self, tmp_path, requirements, python_version=CURRENT_PYTHON + "\n"):
+    def run(
+        self,
+        tmp_path,
+        requirements,
+        python_version=CURRENT_PYTHON + "\n",
+        auto=True,
+        extra_path=None,
+    ):
         req = tmp_path / "requirements.txt"
-        req.write_text(requirements, encoding="utf-8")
+        req.write_text(requirements + (AUTO_USED_HERE if auto else ""), encoding="utf-8")
         pyver = tmp_path / ".python-version"
         pyver.write_text(python_version, encoding="utf-8")
+        env = dict(os.environ)
+        if extra_path is not None:
+            env["PYTHONPATH"] = os.pathsep.join(
+                part for part in (str(extra_path), env.get("PYTHONPATH")) if part
+            )
         return subprocess.run(
             [
                 sys.executable,
@@ -146,18 +223,19 @@ class TestMain:
             capture_output=True,
             text=True,
             timeout=60,
+            env=env,
         )
 
     def test_exit_0_when_everything_matches(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\n")
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All 1 pins match" in result.stdout
+        assert "pins match, and the Python version too." in result.stdout
 
     def test_exit_1_on_a_wrong_version(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}.1\n")
         assert result.returncode == 1
         assert "DIFFERS" in result.stdout
-        assert "DRIFT: 1 of 1 packages differ" in result.stdout
+        assert "DRIFT: 1 of " in result.stdout and "packages differ" in result.stdout
 
     def test_exit_1_on_a_missing_package(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\nno-such-distribution-xyz==1.0\n")
@@ -171,9 +249,33 @@ class TestMain:
         assert "MISMATCH" in result.stdout
         assert "Python is not" in result.stdout
 
+    @pytest.mark.skipif(not AUTO_USED_HERE, reason="no automatically used package installed")
+    def test_exit_1_on_an_importable_auto_used_package_left_unpinned(self, tmp_path):
+        result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\n", auto=False)
+        assert result.returncode == 1
+        assert "UNPINNED" in result.stdout
+        assert "aiohttp uses it by itself" in result.stdout
+
+    def test_exit_1_when_brotli_appears_unpinned(self, tmp_path):
+        result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\n", extra_path=fake_brotli(tmp_path))
+        assert result.returncode == 1, result.stdout + result.stderr
+        lines = result.stdout.splitlines()
+        assert any(
+            line.split() == ["Brotli", "(none)", "(importable)", "UNPINNED"] for line in lines
+        )
+        assert "aiohttp uses it by itself: Brotli" in result.stdout
+
+    def test_exit_0_once_brotli_is_pinned_at_its_version(self, tmp_path):
+        result = self.run(
+            tmp_path,
+            f"pytest=={PYTEST_VERSION}\nBrotli==1.2.0\n",
+            extra_path=fake_brotli(tmp_path, version="1.2.0"),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
     @pytest.mark.parametrize("requirements", ["pytest>=1.0\n", "", "# nothing pinned\n"])
     def test_exit_2_on_requirements_it_cannot_judge(self, tmp_path, requirements):
-        result = self.run(tmp_path, requirements)
+        result = self.run(tmp_path, requirements, auto=False)
         assert result.returncode == 2
         assert result.stderr.startswith("ERROR:")
 
@@ -193,6 +295,10 @@ class TestRepoFiles:
     def test_the_repo_files_parse(self):
         assert {"aiohttp", "aiofiles", "beautifulsoup4", "lxml", "aiodns"} <= set(repo_pins())
         cpd.parse_python_version(cpd.DEFAULT_PYTHON_VERSION_FILE.read_text(encoding="utf-8"))
+
+    def test_the_repo_pins_cover_the_auto_used_packages_installed_here(self):
+        # In the dev venv and CI aiodns comes from requirements.txt itself.
+        assert cpd.unpinned_auto_used(repo_pins()) == []
 
     def test_pyproject_pins_the_same_runtime_versions(self):
         pins = repo_pins()

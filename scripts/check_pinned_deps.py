@@ -12,8 +12,13 @@ an apt upgrade on the Pi. Run it there with the system Python:
 either.) It also checks the interpreter's version against .python-version, the
 version CI tests with.
 
+It also looks for the optional packages aiohttp starts using by itself when
+they are importable (aiodns, Brotli, ...): one installed but not pinned puts
+production and the dev venv on different code paths, so it counts as drift.
+
 Exit codes: 0 = everything matches, 1 = drift (a version differs, a pinned
-package is missing, or the Python version differs), 2 = the requirements or
+package is missing, an automatically used package is installed but not pinned,
+or the Python version differs), 2 = the requirements or
 .python-version file can't be read or contains something other than exact
 pins. Every requirements line must be `name==version`: a range or a marker
 would make "matches" ambiguous, so the check refuses it instead of skipping it.
@@ -24,6 +29,7 @@ is to report a broken or missing dependency, not to crash on it.
 
 import argparse
 import importlib.metadata
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -35,6 +41,19 @@ DEFAULT_PYTHON_VERSION_FILE = REPO_ROOT / ".python-version"
 
 _PIN_RE = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==([A-Za-z0-9.+!_-]+)$")
 _PYTHON_VERSION_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?$")
+
+# (module, distribution) pairs aiohttp switches to on its own as soon as the
+# module is importable: aiodns makes c-ares its default DNS resolver (the Pi has
+# it via apt, and it behaves differently from the threaded getaddrinfo one),
+# Brotli/brotlicffi add `br` response decoding, backports.zstd adds zstd before
+# Python 3.14. Installed on one side only, such a package silently changes what
+# the dev venv tests compared to production, so an importable one must be pinned.
+AUTO_USED = (
+    ("aiodns", "aiodns"),
+    ("brotli", "Brotli"),
+    ("brotlicffi", "brotlicffi"),
+    ("backports.zstd", "backports.zstd"),
+)
 
 
 class Row(NamedTuple):
@@ -95,6 +114,25 @@ def installed_version(name: str) -> Optional[str]:
         return None
 
 
+def importable(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):  # e.g. the parent package of a dotted name is missing
+        return False
+
+
+def unpinned_auto_used(
+    pins: Dict[str, str], is_importable: Callable[[str], bool] = importable
+) -> List[str]:
+    """The AUTO_USED distributions that are importable here but not pinned."""
+    pinned = {normalize(name) for name in pins}
+    return [
+        dist
+        for module, dist in AUTO_USED
+        if is_importable(module) and normalize(dist) not in pinned
+    ]
+
+
 def python_matches(expected: str, actual: Sequence[object]) -> bool:
     """`3.14` matches any 3.14.x; `3.14.4` only 3.14.4."""
     wanted = [int(part) for part in expected.split(".")]
@@ -108,7 +146,11 @@ def check_pins(
 
 
 def format_report(
-    rows: List[Row], python_expected: str, python_actual: Sequence[object], executable: str
+    rows: List[Row],
+    python_expected: str,
+    python_actual: Sequence[object],
+    executable: str,
+    unpinned: Sequence[str] = (),
 ) -> str:
     actual = ".".join(str(part) for part in python_actual[:3])
     python_status = "OK" if python_matches(python_expected, python_actual) else "MISMATCH"
@@ -122,6 +164,8 @@ def format_report(
         installed = row.installed if row.installed is not None else "(missing)"
         status = "OK" if row.ok else ("MISSING" if row.installed is None else "DIFFERS")
         lines.append(f"{row.name:<20}{row.pinned:<12}{installed:<16}{status}")
+    for dist in unpinned:
+        lines.append(f"{dist:<20}{'(none)':<12}{'(importable)':<16}UNPINNED")
     return "\n".join(lines)
 
 
@@ -142,18 +186,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     rows = check_pins(pins)
-    print(format_report(rows, python_expected, sys.version_info, sys.executable))
+    unpinned = unpinned_auto_used(pins)
+    print(format_report(rows, python_expected, sys.version_info, sys.executable, unpinned))
 
     drift = [row for row in rows if not row.ok]
     python_ok = python_matches(python_expected, sys.version_info)
     print()
-    if not drift and python_ok:
+    if not drift and not unpinned and python_ok:
         print(f"All {len(rows)} pins match, and the Python version too.")
         return 0
     problems = []
     if drift:
         problems.append(
             f"{len(drift)} of {len(rows)} packages differ from {args.requirements.name}"
+        )
+    if unpinned:
+        problems.append(
+            f"installed but not pinned, and aiohttp uses it by itself: {', '.join(unpinned)}"
         )
     if not python_ok:
         problems.append(f"Python is not {python_expected} ({args.python_version_file.name})")
